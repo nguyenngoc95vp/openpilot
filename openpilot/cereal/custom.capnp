@@ -396,6 +396,13 @@ struct CarControlSP @0xa5cd762cd951a455 {
   intelligentCruiseButtonManagement @4 :IntelligentCruiseButtonManagement;
   turnAssist @5 :TurnAssist;
   laneChangeSmoothing @6 :LaneChangeSmoothing;
+  lateralExtension @7 :LateralExtension;
+
+  enum LateralExtension {
+    none @0;
+    jerkAware @1;
+    neuralNetwork @2;
+  }
 
   struct TurnAssist {
     holdCurvature @0 :Float32;
