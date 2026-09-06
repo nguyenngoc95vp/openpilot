@@ -20,7 +20,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, get_mads_limited_brands
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AUTO_LANE_CHANGE_TIMER, AutoLaneChangeMode
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_change_smoothing import PACE_MIN, PACE_MAX, pace_profile_time
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import load_versions, resolved_tune_version
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import load_versions, mazda_v2_ab_available, resolved_tune_version
 from openpilot.system.ui.lib.application import gui_app
 
 MADS_STEERING_MODE_LABELS = [tr("remain"), tr("pause"), tr("disengage")]
@@ -149,6 +149,9 @@ class SteeringLayoutMici(NavScroller):
     tq_versions = self._load_torque_versions() or {tr("default"): 2.0}
     self._tq_version = BigMultiParamToggleSP(tr("tune version"), "TorqueControlTune",
                                              list(tq_versions), values=list(tq_versions.values()))
+    self._tq_mazda_v2_mode = BigMultiParamToggleSP(tr("B: 5–10 m/s test\nMax unchanged\nReboot to apply"), "MazdaTorqueV2Mode",
+                                                   [tr("A"), tr("B")], values=[0, 1])
+    self._tq_mazda_v2_mode.set_enabled(ui_state.is_offroad)
 
     self._tq_self_tune_btn = BigButtonSP(tr("self tune"))
     self._tq_self_tune_btn.set_subtitle_font_size(24)
@@ -182,7 +185,7 @@ class SteeringLayoutMici(NavScroller):
     for item in [self._tq_version] + self._tq_items_rest:
       item.set_enabled(lambda: self._enforce_torque)
     self._tq_view = self._torque_settings_btn.link_sub_panel([self._torque_toggle, self._jerk_aware_toggle,
-                                                              self._tq_version] + self._tq_items_rest)
+                                                              self._tq_version, self._tq_mazda_v2_mode] + self._tq_items_rest)
 
   # --- Torque tune version selector ---
   @staticmethod
@@ -253,6 +256,7 @@ class SteeringLayoutMici(NavScroller):
 
     enforce_torque = self._enforce_torque = ui_state.params.get_bool("EnforceTorqueControl")
     self._v2_tune = resolved_tune_version(ui_state.params) == 2.0
+    self._tq_mazda_v2_mode.set_visible(mazda_v2_ab_available(ui_state.params, ui_state.CP))
     jerk_aware = ui_state.params.get_bool("LateralJerkTorqueController")
     self_tune_on = ui_state.params.get_bool("LiveTorqueParamsToggle")
     custom_on = ui_state.params.get_bool("CustomTorqueParams")

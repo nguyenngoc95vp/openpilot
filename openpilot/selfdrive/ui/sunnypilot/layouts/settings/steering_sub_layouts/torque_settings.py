@@ -9,11 +9,11 @@ from collections.abc import Callable
 import pyray as rl
 
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import load_versions, resolved_tune_version
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import load_versions, mazda_v2_ab_available, resolved_tune_version
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
-from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, multiple_button_item_sp, toggle_item_sp, option_item_sp
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeOptionDialog, TreeFolder, TreeNode
 from openpilot.system.ui.widgets import Widget, DialogResult
 from openpilot.system.ui.widgets.network import NavButton
@@ -48,6 +48,16 @@ class TorqueSettingsLayout(Widget):
       description="Select the version of Torque Control Tune to use.",
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_torque_version_dialog,
+    )
+    self._mazda_v2_mode = multiple_button_item_sp(
+      title=lambda: tr("CX-5 Torque v2 A/B"),
+      description=lambda: tr(
+        "A keeps the current Torque v2 behavior. B uses the experimental 5–10 m/s " +
+        "low-speed retaper. Maximum steering authority is unchanged. Change while offroad, then reboot."
+      ),
+      buttons=[lambda: tr("A"), lambda: tr("B")],
+      param="MazdaTorqueV2Mode",
+      inline=True,
     )
     self._self_tune_toggle = toggle_item_sp(
       param="LiveTorqueParamsToggle",
@@ -106,6 +116,7 @@ class TorqueSettingsLayout(Widget):
     items = [
       self._jerk_aware_toggle,
       self._torque_control_versions,
+      self._mazda_v2_mode,
       self._self_tune_toggle,
       self._relaxed_tune_toggle,
       self._speed_dep_toggle,
@@ -123,6 +134,9 @@ class TorqueSettingsLayout(Widget):
     # v2 tune replaces the jerk-aware mechanisms and forces the controller off, so the
     # toggle is disabled while v2 is the tune that will actually run
     self._jerk_aware_toggle.action_item.set_enabled(ui_state.is_offroad() and not nnlc_enabled and not v2_tune)
+    ab_available = mazda_v2_ab_available(ui_state.params, ui_state.CP)
+    self._mazda_v2_mode.set_visible(ab_available)
+    self._mazda_v2_mode.action_item.set_enabled(ab_available and ui_state.is_offroad())
     if not ui_state.params.get_bool("LiveTorqueParamsToggle"):
       ui_state.params.remove("LiveTorqueParamsRelaxedToggle")
       self._relaxed_tune_toggle.action_item.set_state(False)

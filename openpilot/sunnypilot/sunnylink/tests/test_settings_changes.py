@@ -191,6 +191,29 @@ class TestTorqueOptionGeneration(OpenpilotTestCase):
     assert "options" not in item, "TorqueControlTune must not carry static options; they come from latcontrol_torque_versions.json"
 
 
+class TestMazdaTorqueV2Mode(OpenpilotTestCase):
+  def test_selector_options_text_and_gates(self, schema):
+    item = _find_item(schema, "MazdaTorqueV2Mode")
+    assert item is not None
+    assert item["widget"] == "multiple_button"
+    assert item["options"] == [
+      {"value": 0, "label": "A (Current)"},
+      {"value": 1, "label": "B (Low-speed retaper)"},
+    ]
+
+    description = item["description"].lower()
+    assert "experimental" in description
+    assert "maximum steering authority is unchanged" in description
+    assert "reboot after changing" in description
+
+    assert item["visibility"] == [
+      {"type": "capability", "field": "mazda_torque_v2_ab_available", "equals": True},
+    ]
+    rules = json.dumps(item["visibility"] + item["enablement"])
+    assert "TorqueInterceptorEnabled" not in rules
+    assert item["enablement"] == [{"type": "offroad_only"}]
+
+
 class TestReleaseBranchGates(OpenpilotTestCase):
   @parameterized.expand([
     "EnableGithubRunner",
