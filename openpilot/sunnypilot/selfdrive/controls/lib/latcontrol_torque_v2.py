@@ -10,6 +10,7 @@ from collections import deque
 
 from openpilot.cereal import log
 from opendbc.car.lateral import get_friction
+from opendbc.car.mazda.values import MazdaFlags
 from opendbc.sunnypilot.car.interfaces import get_steer_rail_schedule
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -18,6 +19,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.drive_helpers import MIN_SPEED, MIN_STABLE_DELAY
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base import sign
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import MazdaTorqueV2Mode
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import (
   LatControlTorque as LatControlTorqueV0,
@@ -63,12 +65,17 @@ LOW_SPEED_Y = [12, 10.5, 8, 5]
 # owner's capped-build route (r1b), ending corrections in a railed push then a friction
 # grab (his "jerks violently, then snaps to a halt"). Halve the boost under 5 m/s for
 # Mazda TI CPs, blending back to stock by 10 m/s (36 kph) — the band he calls nailed.
-TI_LSF_SCALE_BP = [0.0, 5.0, 10.0]
-TI_LSF_SCALE_V = [0.5, 0.5, 1.0]
+TI_LSF_SCALE_A_BP = [0.0, 5.0, 10.0]
+TI_LSF_SCALE_A_V = [0.5, 0.5, 1.0]
+TI_LSF_SCALE_B_BP = [0.0, 5.0, 7.5, 10.0]
+TI_LSF_SCALE_B_V = [0.5, 0.5, 0.7, 1.0]
 
 
-def ti_lsf_scale(v_ego):
-  return float(np.interp(max(v_ego, 0.0), TI_LSF_SCALE_BP, TI_LSF_SCALE_V))
+def ti_lsf_scale(v_ego, mode: MazdaTorqueV2Mode | None = MazdaTorqueV2Mode.A):
+  bp, values = ((TI_LSF_SCALE_B_BP, TI_LSF_SCALE_B_V)
+                if mode == MazdaTorqueV2Mode.B
+                else (TI_LSF_SCALE_A_BP, TI_LSF_SCALE_A_V))
+  return float(np.interp(max(v_ego, 0.0), bp, values))
 
 # Roll compensation and latAccelOffset are lateral-accel-domain corrections; below
 # walking pace the desired lateral accel is ~0, so an unfaded road-crown term dominates
@@ -158,7 +165,7 @@ class LatControlTorque(LatControlTorqueV0):
   # feeds it stops being a dead argument here.
   KD_SCHEDULE = [KD_INTERP_SPEEDS, KD_INTERP]
 
-  def __init__(self, CP, CP_SP, CI, dt):
+  def __init__(self, CP, CP_SP, CI, dt, mazda_v2_mode=MazdaTorqueV2Mode.A):
     super().__init__(CP, CP_SP, CI, dt)
     # Stores CURVATURE, scaled by the current v^2 on read — buffered lateral accel keeps the
     # old speed's v^2 and reads as phantom tracking error whenever speed changes in the delay
@@ -166,6 +173,13 @@ class LatControlTorque(LatControlTorqueV0):
     self.curvature_request_buffer = deque([0.] * self.lat_accel_request_buffer_len, maxlen=self.lat_accel_request_buffer_len)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
     self._ti_lsf_scaled = CP.steerAtStandstill and CP.brand == 'mazda'
+    mazda_v2_ab_eligible = (
+      CP.brand == "mazda" and CP.carFingerprint == "MAZDA_CX5" and CP.steerAtStandstill and
+      CP.flags & MazdaFlags.TORQUE_INTERCEPTOR
+    )
+    self.mazda_v2_mode = None
+    if mazda_v2_ab_eligible:
+      self.mazda_v2_mode = MazdaTorqueV2Mode.B if mazda_v2_mode == MazdaTorqueV2Mode.B else MazdaTorqueV2Mode.A
     self.low_speed_pid_threshold = max(CP.minSteerSpeed, MIN_LATERAL_CONTROL_SPEED)
     self.prev_steering_pressed = False
     self.prev_setpoint = 0.0
@@ -353,7 +367,7 @@ class LatControlTorque(LatControlTorqueV0):
       # rather than reading pid.k_p, which still holds the previous frame's speed here
       low_speed_factor = (np.interp(CS.vEgo, LOW_SPEED_X, LOW_SPEED_Y) / max(CS.vEgo, MIN_SPEED)) ** 2
       if self._ti_lsf_scaled:
-        low_speed_factor *= ti_lsf_scale(CS.vEgo)
+        low_speed_factor *= ti_lsf_scale(CS.vEgo, self.mazda_v2_mode)
       current_kp = np.interp(CS.vEgo, self.pid._k_p[0], self.pid._k_p[1])
       error *= 1.0 + low_speed_factor / max(current_kp, 1e-3)
 

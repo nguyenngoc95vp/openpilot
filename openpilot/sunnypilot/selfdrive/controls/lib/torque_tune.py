@@ -10,8 +10,14 @@ See the LICENSE.md file in the root directory for more details.
 
 import json
 import os
+from enum import IntEnum
 
 TORQUE_VERSIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latcontrol_torque_versions.json")
+
+
+class MazdaTorqueV2Mode(IntEnum):
+  A = 0
+  B = 1
 
 
 def load_versions() -> dict:
@@ -33,3 +39,23 @@ def resolved_tune_version(params, torque_lateral_tuning: bool = True) -> float |
   if not params.get_bool("EnforceTorqueControl"):
     return 0.0 if torque_lateral_tuning else None
   return float(params.get("TorqueControlTune", return_default=True))
+
+
+def mazda_v2_ab_available(params, CP) -> bool:
+  return bool(
+    CP is not None
+    and CP.carFingerprint == "MAZDA_CX5"
+    and CP.steerAtStandstill
+    and params.get_bool("TorqueInterceptorEnabled")
+    and CP.lateralTuning.which() == "torque"
+    and resolved_tune_version(params, True) == 2.0
+  )
+
+
+def resolved_mazda_v2_mode(params, CP) -> MazdaTorqueV2Mode:
+  if not mazda_v2_ab_available(params, CP):
+    return MazdaTorqueV2Mode.A
+  try:
+    return MazdaTorqueV2Mode(int(params.get("MazdaTorqueV2Mode", return_default=True)))
+  except (TypeError, ValueError):
+    return MazdaTorqueV2Mode.A

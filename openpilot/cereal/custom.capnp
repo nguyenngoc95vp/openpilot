@@ -397,11 +397,18 @@ struct CarControlSP @0xa5cd762cd951a455 {
   turnAssist @5 :TurnAssist;
   laneChangeSmoothing @6 :LaneChangeSmoothing;
   lateralExtension @7 :LateralExtension;
+  torqueV2Mode @8 :TorqueV2Mode;
 
   enum LateralExtension {
     none @0;
     jerkAware @1;
     neuralNetwork @2;
+  }
+
+  enum TorqueV2Mode {
+    notApplicable @0;
+    modeA @1;
+    modeB @2;
   }
 
   struct TurnAssist {

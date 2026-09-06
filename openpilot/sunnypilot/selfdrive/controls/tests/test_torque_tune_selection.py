@@ -24,6 +24,11 @@ from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.sunnypilot.selfdrive.controls import controlsd_ext
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import (
+  MazdaTorqueV2Mode,
+  mazda_v2_ab_available,
+  resolved_mazda_v2_mode,
+)
 
 V0 = "v0"
 V1 = "v1"  # stands in for the `lac` upstream controller controlsd passes in
@@ -33,7 +38,7 @@ V2 = "v2"
 @pytest.fixture
 def ctx(monkeypatch):
   monkeypatch.setattr(controlsd_ext, "LatControlTorqueV0", lambda *a, **k: V0)
-  monkeypatch.setattr(controlsd_ext, "LatControlTorqueV2", lambda *a, **k: V2)
+  monkeypatch.setattr(controlsd_ext, "LatControlTorqueV2", lambda *a, **k: (V2, k))
   with OpenpilotPrefix():
     params = Params()
     CP = car.CarParams.new_message(steerControlType="torque")
@@ -47,6 +52,81 @@ def select(controls):
   return ControlsExt.initialize_lateral_control(controls, V1, MagicMock(), 0.01)
 
 
+def selected_controller(controls):
+  selected = select(controls)
+  return selected[0] if isinstance(selected, tuple) else selected
+
+
+def _cp(fingerprint="MAZDA_CX5", *, steer_at_standstill=True):
+  CP = car.CarParams.new_message(
+    steerControlType="torque",
+    carFingerprint=fingerprint,
+    steerAtStandstill=steer_at_standstill,
+    brand="mazda",
+  )
+  CP.lateralTuning.init("torque")
+  return CP.as_reader()
+
+
+class TestMazdaTorqueV2Mode:
+  def test_unset_defaults_to_a(self, ctx):
+    params, _ = ctx
+    params.put_bool("EnforceTorqueControl", True, block=True)
+    params.put_bool("TorqueInterceptorEnabled", True, block=True)
+    params.remove("MazdaTorqueV2Mode")
+    assert resolved_mazda_v2_mode(params, _cp()) == MazdaTorqueV2Mode.A
+
+  def test_b_requires_exact_cx5_ti_v2(self, ctx):
+    params, _ = ctx
+    params.put_bool("EnforceTorqueControl", True, block=True)
+    params.put_bool("TorqueInterceptorEnabled", True, block=True)
+    params.put("TorqueControlTune", 2.0, block=True)
+    params.put("MazdaTorqueV2Mode", 1, block=True)
+    assert resolved_mazda_v2_mode(params, _cp()) == MazdaTorqueV2Mode.B
+    assert resolved_mazda_v2_mode(params, _cp("MAZDA_CX5_2022")) == MazdaTorqueV2Mode.A
+    assert resolved_mazda_v2_mode(params, _cp("MAZDA_CX8_2022")) == MazdaTorqueV2Mode.A
+    assert resolved_mazda_v2_mode(params, _cp(steer_at_standstill=False)) == MazdaTorqueV2Mode.A
+    params.put_bool("TorqueInterceptorEnabled", False, block=True)
+    assert resolved_mazda_v2_mode(params, _cp()) == MazdaTorqueV2Mode.A
+
+  def test_non_v2_and_invalid_values_fail_closed_to_a(self, ctx):
+    params, _ = ctx
+    params.put_bool("EnforceTorqueControl", True, block=True)
+    params.put_bool("TorqueInterceptorEnabled", True, block=True)
+    params.put("MazdaTorqueV2Mode", 99, block=True)
+    assert resolved_mazda_v2_mode(params, _cp()) == MazdaTorqueV2Mode.A
+    params.put("TorqueControlTune", 0.0, block=True)
+    params.put("MazdaTorqueV2Mode", 1, block=True)
+    assert resolved_mazda_v2_mode(params, _cp()) == MazdaTorqueV2Mode.A
+
+  def test_visibility_uses_the_same_gate(self, ctx):
+    params, _ = ctx
+    params.put_bool("EnforceTorqueControl", True, block=True)
+    params.put_bool("TorqueInterceptorEnabled", True, block=True)
+    params.put("TorqueControlTune", 2.0, block=True)
+    assert mazda_v2_ab_available(params, _cp())
+    assert not mazda_v2_ab_available(params, _cp("MAZDA_CX5_2022"))
+    assert not mazda_v2_ab_available(params, _cp("MAZDA_CX8_2022"))
+
+  def test_cx5_v2_constructor_receives_resolved_b(self, ctx):
+    params, controls = ctx
+    CP = car.CarParams.new_message(
+      steerControlType="torque",
+      carFingerprint="MAZDA_CX5",
+      steerAtStandstill=True,
+      brand="mazda",
+    )
+    CP.lateralTuning.init("torque")
+    controls.CP = CP.as_reader()
+    params.put_bool("EnforceTorqueControl", True, block=True)
+    params.put_bool("TorqueInterceptorEnabled", True, block=True)
+    params.put("TorqueControlTune", 2.0, block=True)
+    params.put("MazdaTorqueV2Mode", 1, block=True)
+    selected, kwargs = select(controls)
+    assert selected == V2
+    assert kwargs["mazda_v2_mode"] == MazdaTorqueV2Mode.B
+
+
 class TestTorqueTuneSelection:
   def test_unset_selects_v2(self, ctx):
     """The declared default in params_keys.h is 2.0 — an unset param must honor it, so a
@@ -54,14 +134,14 @@ class TestTorqueTuneSelection:
     params, controls = ctx
     params.put_bool("EnforceTorqueControl", True, block=True)
     params.remove("TorqueControlTune")
-    assert select(controls) == V2
+    assert selected_controller(controls) == V2
 
   @pytest.mark.parametrize(("version", "expected"), [(0.0, V0), (1.0, V1), (2.0, V2)])
   def test_explicit_version_is_honored(self, ctx, version, expected):
     params, controls = ctx
     params.put_bool("EnforceTorqueControl", True, block=True)
     params.put("TorqueControlTune", version, block=True)
-    assert select(controls) == expected
+    assert selected_controller(controls) == expected
 
   def test_every_declared_version_is_wired(self, ctx):
     """The versions file is what the UI selectors and the sunnylink schema offer, while
@@ -77,7 +157,7 @@ class TestTorqueTuneSelection:
     params.put_bool("EnforceTorqueControl", True, block=True)
     for version, expected in wired.items():
       params.put("TorqueControlTune", version, block=True)
-      assert select(controls) == expected
+      assert selected_controller(controls) == expected
 
   @pytest.mark.parametrize("version", [1.0, 2.0])
   def test_torque_control_not_enforced_still_uses_v0_for_torque_cars(self, ctx, version):
@@ -88,7 +168,7 @@ class TestTorqueTuneSelection:
     params, controls = ctx
     params.put_bool("EnforceTorqueControl", False, block=True)
     params.put("TorqueControlTune", version, block=True)
-    assert select(controls) == V0
+    assert selected_controller(controls) == V0
 
   def test_ui_default_matches_what_controls_runs(self, ctx):
     """For an unset param the MICI selector lights up the declared default (the widget itself
@@ -103,7 +183,7 @@ class TestTorqueTuneSelection:
     shown = float(params.get("TorqueControlTune", return_default=True))
     assert shown in set(SteeringLayoutMici._load_torque_versions().values()), \
       "the declared default must be a version the selectors offer"
-    assert {0.0: V0, 1.0: V1, 2.0: V2}[shown] == select(controls)
+    assert {0.0: V0, 1.0: V1, 2.0: V2}[shown] == selected_controller(controls)
 
 
 def _with_fingerprint(controls, fingerprint: str):
@@ -125,14 +205,14 @@ class TestTorqueTuneTiSeed:
   def test_ti_on_unset_seeds_enforce_and_resolves_v2(self, ctx):
     params, controls = ctx
     params.put_bool("TorqueInterceptorEnabled", True, block=True)
-    assert select(controls) == V2
+    assert selected_controller(controls) == V2
     assert params.get_bool("EnforceTorqueControl")
 
   def test_explicit_enforce_off_persists(self, ctx):
     params, controls = ctx
     params.put_bool("TorqueInterceptorEnabled", True, block=True)
     params.put_bool("EnforceTorqueControl", False, block=True)
-    assert select(controls) == V0
+    assert selected_controller(controls) == V0
     assert not params.get_bool("EnforceTorqueControl")
 
   def test_ti_off_seeds_nothing(self, ctx):

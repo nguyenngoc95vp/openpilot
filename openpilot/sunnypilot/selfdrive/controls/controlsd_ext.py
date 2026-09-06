@@ -19,7 +19,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import Bl
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_change_smoothing import LaneChangeSmoothing
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import resolved_tune_version
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import MazdaTorqueV2Mode, resolved_mazda_v2_mode, resolved_tune_version
 from openpilot.sunnypilot.selfdrive.controls.lib.turn_assist import TurnAssistController
 
 
@@ -100,6 +100,15 @@ def lateral_extension_of(lac):
   return custom.CarControlSP.LateralExtension.none
 
 
+def torque_v2_mode_of(lac):
+  mode = getattr(lac, "mazda_v2_mode", None)
+  if mode == MazdaTorqueV2Mode.A:
+    return custom.CarControlSP.TorqueV2Mode.modeA
+  if mode == MazdaTorqueV2Mode.B:
+    return custom.CarControlSP.TorqueV2Mode.modeB
+  return custom.CarControlSP.TorqueV2Mode.notApplicable
+
+
 class ControlsExt(ModelStateBase):
   lagd_toggle: bool
 
@@ -131,7 +140,13 @@ class ControlsExt(ModelStateBase):
     if version == 0.0:  # v0
       return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)
     elif version == 2.0:  # v2
-      return LatControlTorqueV2(self.CP, self.CP_SP, CI, dt)
+      return LatControlTorqueV2(
+        self.CP,
+        self.CP_SP,
+        CI,
+        dt,
+        mazda_v2_mode=resolved_mazda_v2_mode(self.params, self.CP),
+      )
     else:
       return lac
 
@@ -202,6 +217,7 @@ class ControlsExt(ModelStateBase):
       CC_SP.params = build_param_dump(self.params)
       self._param_dump_pending = False
     CC_SP.lateralExtension = lateral_extension_of(getattr(self, "LaC", None))
+    CC_SP.torqueV2Mode = torque_v2_mode_of(getattr(self, "LaC", None))
 
     self.get_lead_data(CC_SP.leadOne, sm['radarState'].leadOne)
     self.get_lead_data(CC_SP.leadTwo, sm['radarState'].leadTwo)

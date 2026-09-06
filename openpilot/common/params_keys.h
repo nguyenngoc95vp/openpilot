@@ -296,6 +296,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralJerkTorqueController", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LiveTorqueParamsToggle", {PERSISTENT | BACKUP , BOOL}},
     {"LiveTorqueParamsRelaxedToggle", {PERSISTENT | BACKUP , BOOL}},
+    {"MazdaTorqueV2Mode", {PERSISTENT | BACKUP, INT, "0"}},
     {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},
     {"TorqueInterceptorEnabled", {PERSISTENT | DONT_LOG, BOOL, "0"}},
     {"TorqueInterceptorEnableRequest", {PERSISTENT | DONT_LOG, BOOL, "0"}},

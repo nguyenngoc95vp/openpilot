@@ -18,23 +18,28 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from opendbc.car.mazda.values import MazdaFlags
 from opendbc.car.structs import car
 from openpilot.cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
+from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import torque_v2_mode_of
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import (
   LatControlTorque as LatControlTorqueV2,
   get_center_chatter_jerk_deadzone,
   MODEL_STALE_FRAMES,
+  ti_lsf_scale,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import MazdaTorqueV2Mode
 
 DT = 0.01
 LAT_DELAY = 0.3
 DELAY_FRAMES = int(LAT_DELAY / DT)
 LAF = 2.5
 CURV_PER_DEG = 2e-4  # toy geometry: curvature = -steeringAngleDeg * CURV_PER_DEG
+MAZDA_TI_FLAGS = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO | MazdaFlags.TORQUE_INTERCEPTOR
 
 VM = SimpleNamespace(calc_curvature=lambda angle_rad, v_ego, roll: math.degrees(angle_rad) * CURV_PER_DEG)
 LP = SimpleNamespace(angleOffsetDeg=0.0, roll=0.0)
@@ -55,8 +60,25 @@ def make_ci():
   return CI
 
 
-def make_lac(cls, friction=0.0):
-  return cls(make_cp(friction=friction), custom.CarParamsSP.new_message().as_reader(), make_ci(), DT)
+def make_lac(cls, friction=0.0, **kwargs):
+  return cls(make_cp(friction=friction), custom.CarParamsSP.new_message().as_reader(), make_ci(), DT, **kwargs)
+
+
+def make_mazda_ti_lac(mode, fingerprint="MAZDA_CX5", flags=MAZDA_TI_FLAGS):
+  CP = car.CarParams.new_message(
+    steerControlType="torque",
+    steerLimitTimer=0.4,
+    carFingerprint=fingerprint,
+    steerAtStandstill=True,
+    brand="mazda",
+    flags=int(flags),
+  )
+  CP.lateralTuning.init("torque")
+  CP.lateralTuning.torque.latAccelFactor = LAF
+  return LatControlTorqueV2(
+    CP.as_reader(), custom.CarParamsSP.new_message().as_reader(), make_ci(), DT,
+    mazda_v2_mode=mode,
+  )
 
 
 def make_pair(friction=0.0):
@@ -78,6 +100,53 @@ def step(lac, cs, desired_curvature, active=True, lp=LP, lat_delay=LAT_DELAY):
 def params():
   with OpenpilotPrefix():
     yield Params()
+
+
+class TestMazdaTorqueV2AB:
+  @pytest.mark.parametrize(("v_ego", "a", "b"), [
+    (0.0, 0.5, 0.5),
+    (5.0, 0.5, 0.5),
+    (6.7, 0.67, 0.636),
+    (7.5, 0.75, 0.70),
+    (9.0, 0.90, 0.88),
+    (10.0, 1.0, 1.0),
+    (30.0, 1.0, 1.0),
+  ])
+  def test_exact_scale_pins(self, v_ego, a, b):
+    assert ti_lsf_scale(v_ego, MazdaTorqueV2Mode.A) == pytest.approx(a, abs=1e-3)
+    assert ti_lsf_scale(v_ego, MazdaTorqueV2Mode.B) == pytest.approx(b, abs=1e-3)
+
+  def test_modes_share_kd_and_maximum_authority(self, params):
+    a = make_mazda_ti_lac(MazdaTorqueV2Mode.A)
+    b = make_mazda_ti_lac(MazdaTorqueV2Mode.B)
+    assert b.mazda_v2_mode == MazdaTorqueV2Mode.B
+    assert a.KD_SCHEDULE == b.KD_SCHEDULE
+    assert a.steer_rail_schedule == b.steer_rail_schedule
+    assert a.steer_max == b.steer_max
+    assert a.pid.pos_limit == pytest.approx(b.pid.pos_limit)
+    assert a.pid.neg_limit == pytest.approx(b.pid.neg_limit)
+
+  def test_flagless_cx5_b_is_a_but_not_applicable(self):
+    flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO
+    lac = make_mazda_ti_lac(MazdaTorqueV2Mode.B, flags=flags)
+    assert lac.mazda_v2_mode is None
+    assert ti_lsf_scale(7.5, lac.mazda_v2_mode) == ti_lsf_scale(7.5, MazdaTorqueV2Mode.A)
+    assert torque_v2_mode_of(lac) == custom.CarControlSP.TorqueV2Mode.notApplicable
+
+  def test_native_2022_is_a_but_not_applicable(self):
+    lac = make_mazda_ti_lac(MazdaTorqueV2Mode.B, fingerprint="MAZDA_CX5_2022")
+    assert lac.mazda_v2_mode is None
+    assert ti_lsf_scale(7.5, lac.mazda_v2_mode) == ti_lsf_scale(7.5, MazdaTorqueV2Mode.A)
+    assert torque_v2_mode_of(lac) == custom.CarControlSP.TorqueV2Mode.notApplicable
+
+  @pytest.mark.parametrize(("mode", "telemetry"), [
+    (MazdaTorqueV2Mode.A, custom.CarControlSP.TorqueV2Mode.modeA),
+    (MazdaTorqueV2Mode.B, custom.CarControlSP.TorqueV2Mode.modeB),
+  ])
+  def test_recorded_cohort_reports_effective_mode(self, mode, telemetry):
+    lac = make_mazda_ti_lac(mode)
+    assert lac.mazda_v2_mode == mode
+    assert torque_v2_mode_of(lac) == telemetry
 
 
 class TestLatControlTorqueV2:
