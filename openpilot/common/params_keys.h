@@ -251,6 +251,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LagdValueCache", {PERSISTENT, FLOAT, "0.2"}},
     {"LaneChangeSmoothing", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneChangeSmoothingPace", {PERSISTENT | BACKUP, INT, "5"}},
+    {"OneLaneChange", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneTurnDesire", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"LowSpeedTurnAssist", {PERSISTENT | BACKUP, BOOL, "0"}},

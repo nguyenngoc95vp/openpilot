@@ -101,6 +101,7 @@ class SteeringLayoutMici(NavScroller):
     # AutoLaneChangeTimer is a 7-value mode (-1..5), not a boolean — matches TICI lane_change_settings
     self._lc_timer = BigMultiParamToggleSP(tr("auto lane change"), "AutoLaneChangeTimer",
                                            list(ALC_LABELS.values()), values=list(ALC_LABELS))
+    self._lc_one_per_signal = BigParamControl(tr("one per signal"), "OneLaneChange")
     self._lc_bsm = BigParamControlSP(tr("bsm delay"), "AutoLaneChangeBsmDelay",
                                      depends_on=lambda: self._bsm_applies(self._alc_val) and self._car_has_bsm())
     # blocks lane changes toward a detected road edge — ungated, matching TICI lane_change_settings
@@ -114,7 +115,8 @@ class SteeringLayoutMici(NavScroller):
                                    picker_label_callback=lambda v: f"{pace_profile_time(v):.1f}",
                                    picker_unit=tr("seconds"))
     self._lc_pace.set_enabled(lambda: self._lc_smooth._checked)
-    self._lc_view = self._lane_change_btn.link_sub_panel([self._lc_timer, self._lc_bsm, self._lc_road_edge,
+    self._lc_view = self._lane_change_btn.link_sub_panel([self._lc_timer, self._lc_one_per_signal,
+                                                          self._lc_bsm, self._lc_road_edge,
                                                           self._lc_smooth, self._lc_pace])
 
     # --- Blinker sub-panel ---
@@ -247,12 +249,14 @@ class SteeringLayoutMici(NavScroller):
     lc_bsm = _on_off(ui_state.params.get_bool("AutoLaneChangeBsmDelay") and self._bsm_applies(alc_val))
     road_edge = _on_off(ui_state.params.get_bool("RoadEdgeLaneChangeEnabled"))
     lc_smooth_on = ui_state.params.get_bool("LaneChangeSmoothing")
+    one_per_signal = _on_off(ui_state.params.get_bool("OneLaneChange"))
     if alc_val <= AutoLaneChangeMode.OFF and lc_bsm == "off" and road_edge == "off" and not lc_smooth_on:
       self._lane_change_btn.set_disabled()
     else:
       auto_badge = _alc_label(alc_val) if alc_val > AutoLaneChangeMode.OFF else "off"
       self._lane_change_btn.set_badges([(tr("auto"), auto_badge), (tr("bsm-delay"), lc_bsm),
-                                        (tr("road-edge"), road_edge), (tr("smooth"), _on_off(lc_smooth_on))])
+                                        (tr("road-edge"), road_edge), (tr("smooth"), _on_off(lc_smooth_on)),
+                                        (tr("one-per-signal"), one_per_signal)])
 
     enforce_torque = self._enforce_torque = ui_state.params.get_bool("EnforceTorqueControl")
     self._v2_tune = resolved_tune_version(ui_state.params) == 2.0

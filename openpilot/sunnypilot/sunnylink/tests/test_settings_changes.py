@@ -214,6 +214,15 @@ class TestMazdaTorqueV2Mode(OpenpilotTestCase):
     assert item["enablement"] == [{"type": "offroad_only"}]
 
 
+class TestOneLaneChange(OpenpilotTestCase):
+  def test_schema_exposes_opt_in_one_per_signal_toggle(self, schema):
+    item = _find_item(schema, "OneLaneChange")
+    assert item is not None
+    assert item["widget"] == "toggle"
+    assert item["title"] == "One Lane Change Per Signal"
+    assert item["description"] == "Allow at most one lane change until the turn signal is released."
+
+
 class TestReleaseBranchGates(OpenpilotTestCase):
   @parameterized.expand([
     "EnableGithubRunner",
