@@ -50,6 +50,7 @@ class AutoLaneChangeController:
     self.prev_brake_pressed = False
     self.auto_lane_change_allowed = False
     self.prev_lane_change = False
+    self.prev_blindspot_detected = False
 
     self.read_params()
 
@@ -60,6 +61,7 @@ class AutoLaneChangeController:
       self.lane_change_wait_timer = 0.0
       self.prev_brake_pressed = False
       self.prev_lane_change = False
+      self.prev_blindspot_detected = False
 
   def read_params(self) -> None:
     self.lane_change_bsm_delay = self.params.get_bool("AutoLaneChangeBsmDelay")
@@ -77,13 +79,17 @@ class AutoLaneChangeController:
     self.lane_change_delay = AUTO_LANE_CHANGE_TIMER.get(self.lane_change_set_timer,
                                                         AUTO_LANE_CHANGE_TIMER[AutoLaneChangeMode.NUDGE])
 
-    self.lane_change_wait_timer += DT_MDL
+    # When blindspot protection is enabled, an occupied blindspot must block
+    # the maneuver. Once the blindspot becomes clear, start the configured
+    # auto-lane-change delay from zero so the delay is deterministic.
+    if self.lane_change_bsm_delay and blindspot_detected:
+      self.lane_change_wait_timer = 0.0
+    elif self.lane_change_bsm_delay and self.prev_blindspot_detected and not blindspot_detected:
+      self.lane_change_wait_timer = 0.0
+    else:
+      self.lane_change_wait_timer += DT_MDL
 
-    if self.lane_change_bsm_delay and blindspot_detected and self.lane_change_delay > 0:
-      if self.lane_change_delay == AUTO_LANE_CHANGE_TIMER[AutoLaneChangeMode.NUDGELESS]:
-        self.lane_change_wait_timer = ONE_SECOND_DELAY
-      else:
-        self.lane_change_wait_timer = self.lane_change_delay + ONE_SECOND_DELAY
+    self.prev_blindspot_detected = blindspot_detected
 
   def update_allowed(self) -> bool:
     # Auto lane change allowed if:
