@@ -51,8 +51,8 @@ class DesireHelper:
       self.lane_change_direction = LaneChangeDirection.none
       self.lane_change_timer = 0.0
     else:
-      # Low-speed lane changes are driver-confirmed: blinker + steering torque.
-      # Automatic lane-change timers remain restricted to the normal speed range.
+      # Allow auto lane change below the normal speed threshold as well.
+      # The configured AutoLaneChangeTimer (for example 0.5s) controls the delay.
       if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker:
         self.lane_change_state = LaneChangeState.preLaneChange
         self.lane_change_timer = 0.0
@@ -72,9 +72,9 @@ class DesireHelper:
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        # Below the normal lane-change speed, require an explicit steering nudge.
-        # Above it, preserve the existing manual or automatic lane-change behavior.
-        lane_change_requested = torque_applied or (self.alc.auto_lane_change_allowed and not below_lane_change_speed)
+        # Auto lane change is allowed at low speed too when its configured timer expires.
+        # A clear blindspot is still required. Manual torque also remains supported.
+        lane_change_requested = torque_applied or self.alc.auto_lane_change_allowed
 
         if not one_blinker:
           self.lane_change_state = LaneChangeState.off
