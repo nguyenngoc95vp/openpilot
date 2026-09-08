@@ -33,6 +33,8 @@ TI_TUNE_SEEDS = {
   "LaneChangeSmoothing": True,          # "Smooth Lane Changes": defaults OFF upstream
   "LaneChangeSmoothingPace": 8,         # upstream default 5 (~5.8 s); 8 ≈ 4 s glide
   "LowSpeedTurnAssist": True,           # TI cars steer at standstill, so low-speed assist works
+  "LaneTurnDesire": True,               # recognize a slow blinker as a real intersection turn
+  "LaneTurnValue": 20.0,                # allow the turn mode up to 20 mph (~32 km/h)
   # Owner-validated on the CX-8 (tracking RMSE -35%, override share halved vs static).
   # CX-5 matches its own exact NN model; the CX-8 fuzzy-matches MAZDA_CX5_2022's
   # (similarity 0.93, field-validated). Gate still requires a model match — cars
