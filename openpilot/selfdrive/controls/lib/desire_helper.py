@@ -28,6 +28,7 @@ class DesireHelper:
     self.alc = AutoLaneChangeController(self)
     self.lane_turn_controller = LaneTurnController(self)
     self.lane_turn_direction = TurnDirection.none
+    self.lane_change_completed_with_blinker = False
 
   @staticmethod
   def get_lane_change_direction(CS):
@@ -40,6 +41,11 @@ class DesireHelper:
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
 
+    # A completed lane change may not retrigger while the same blinker remains on.
+    # Turning the blinker fully off arms the next lane change.
+    if not one_blinker:
+      self.lane_change_completed_with_blinker = False
+
     # Lane turn controller update
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
                                                left_blinker=carstate.leftBlinker, right_blinker=carstate.rightBlinker, v_ego=v_ego)
@@ -51,30 +57,22 @@ class DesireHelper:
       self.lane_change_direction = LaneChangeDirection.none
       self.lane_change_timer = 0.0
     else:
-      # Allow auto lane change below the normal speed threshold as well.
-      # The configured AutoLaneChangeTimer (for example 0.5s) controls the delay.
-      if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker:
+      # One lane change per blinker activation. Re-arm only after the blinker is off.
+      if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not self.lane_change_completed_with_blinker:
         self.lane_change_state = LaneChangeState.preLaneChange
         self.lane_change_timer = 0.0
-        # Initialize lane change direction to prevent UI alert flicker
         self.lane_change_direction = self.get_lane_change_direction(carstate)
 
       elif self.lane_change_state == LaneChangeState.preLaneChange:
-        # Update lane change direction
         self.lane_change_direction = self.get_lane_change_direction(carstate)
-
-        torque_applied = carstate.steeringPressed and \
-                         ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
-                          (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
 
         blindspot_detected = (((carstate.leftBlindspot or left_edge_detected) and self.lane_change_direction == LaneChangeDirection.left) or
                               ((carstate.rightBlindspot or right_edge_detected) and self.lane_change_direction == LaneChangeDirection.right))
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        # Auto lane change is allowed at low speed too when its configured timer expires.
-        # A clear blindspot is still required. Manual torque also remains supported.
-        lane_change_requested = torque_applied or self.alc.auto_lane_change_allowed
+        # Auto lane change is allowed below the normal speed threshold too.
+        lane_change_requested = self.alc.auto_lane_change_allowed
 
         if not one_blinker:
           self.lane_change_state = LaneChangeState.off
@@ -83,6 +81,7 @@ class DesireHelper:
         elif lane_change_requested and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
           self.lane_change_timer = 0.0
+          self.lane_change_completed_with_blinker = True
 
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
         self.lane_change_timer += DT_MDL
