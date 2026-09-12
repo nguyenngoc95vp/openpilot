@@ -1,13 +1,11 @@
-# zoompilot develop: opendbc submodule served from the zoompilot org fork
-# (zoompilot/opendbc). Touch this file to force `git submodule sync` to rewrite
-# cached URLs on devices upgrading from snapshots that pointed at
-# zephleggett/opendbc-sunnypilot.git or zephleggett/opendbc.git.
+# zoompilot develop: opendbc submodule served from the user's fork
+# This branch carries the CX-8 Starcx8 steering tune.
 [submodule "panda"]
   path = panda
   url = https://github.com/pdscomp/panda.git
 [submodule "opendbc"]
   path = opendbc_repo
-  url = https://github.com/pdscomp/opendbc.git
+  url = https://github.com/nguyenngoc95vp/opendbc.git
 [submodule "msgq"]
   path = msgq_repo
   url = https://github.com/sunnypilot/msgq.git
@@ -21,5 +19,5 @@
   path = tinygrad_repo
   url = https://github.com/sunnypilot/tinygrad.git
 [submodule "sunnypilot/neural_network_data"]
-	path = openpilot/sunnypilot/neural_network_data
+\tpath = openpilot/sunnypilot/neural_network_data
   url = https://github.com/sunnypilot/neural-network-data.git
