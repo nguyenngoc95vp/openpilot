@@ -7,8 +7,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarInterfaceBase, TorqueFromLateralAccelCallbackType, LateralAccelFromTorqueCallbackType
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
-from opendbc.car.mazda.longitudinal import enter_radar_programming_session, request_radar_default_session
-from opendbc.car.mazda.values import CAR, LKAS_LIMITS, MazdaSafetyFlags, MazdaSafetyFlags, GEN1, GEN2, GEN3
+from opendbc.car.mazda.values import CAR, LKAS_LIMITS, MazdaSafetyFlags, GEN1, GEN2, GEN3
 from openpilot.common.params import Params
 
 NON_LINEAR_TORQUE_PARAMS = {
@@ -23,11 +22,7 @@ class CarInterface(CarInterfaceBase):
   CarController = CarController
 
   def get_lataccel_torque_siglin(self) -> float:
-
     def torque_from_lateral_accel_siglin_func(lateral_acceleration: float) -> float:
-      # The "lat_accel vs torque" relationship is assumed to be the sum of "sigmoid + linear" curves
-      # An important thing to consider is that the slope at 0 should be > 0 (ideally >1)
-      # This has big effect on the stability about 0 (noise when going straight)
       non_linear_torque_params = NON_LINEAR_TORQUE_PARAMS.get(self.CP.carFingerprint)
       assert non_linear_torque_params, "The params are not defined"
       a, b, c, _ = non_linear_torque_params
@@ -62,17 +57,21 @@ class CarInterface(CarInterfaceBase):
     else:
       return self.lateral_accel_from_torque_linear
 
-
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
     ret.brand = "mazda"
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.mazda)]
     p = Params()
 
-    ret.radarUnavailable = True
+    # CX-8 Gen1 uses the factory radar and factory Mazda ACC for longitudinal control.
+    # openpilot/TI are lateral-only. Do not enable Radar Emulation or Radar Interceptor.
+    ret.radarUnavailable = False
+    ret.pcmCruise = True
+    ret.openpilotLongitudinalControl = False
+    p.put_bool("RadarEmulationEnabled", False)
+    p.put_bool("RadarInterceptorEnabled", False)
 
     ret.dashcamOnly = False
-
     ret.steerLimitTimer = 0.8
 
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
@@ -91,48 +90,15 @@ class CarInterface(CarInterfaceBase):
     if candidate in GEN1:
       ret.steerActuatorDelay = 0.335
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.GEN1.value
-      if p.get_bool("TorqueInterceptorEnabled"): # Torque Interceptor Installed
+      if p.get_bool("TorqueInterceptorEnabled"):
         ret.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.minSteerSpeed = 0.0
         ret.steerAtStandstill = True
-      if p.get_bool("RadarInterceptorEnabled"): # Radar Interceptor Installed
-        ret.flags |= MazdaSafetyFlags.RADAR_INTERCEPTOR.value
-        ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_INTERCEPTOR.value
-        ret.alphaLongitudinalAvailable = alpha_long
-        ret.openpilotLongitudinalControl = True
-        ret.radarUnavailable = False
-        ret.startingState = True
-        ret.longitudinalTuning.kpBP = [0., 5., 30.]
-        ret.longitudinalTuning.kpV = [1.3, 1.0, 0.7]
-        ret.longitudinalTuning.kiBP = [0., 5., 20., 30.]
-        ret.longitudinalTuning.kiV = [0.36, 0.23, 0.17, 0.1]
-      # Software radar emulation. Only when no hardware Radar Interceptor is installed:
-      # the two paths both own CRZ_INFO/CRZ_CTRL and must never run together.
-      # TI + no RI hardware: always use software radar emulation.
-      emu = p.get_bool("RadarEmulationEnabled") or (p.get_bool("TorqueInterceptorEnabled") and not p.get_bool("RadarInterceptorEnabled"))
-      if emu and not p.get_bool("RadarInterceptorEnabled"):
-        ret.flags |= MazdaSafetyFlags.RADAR_EMULATION.value
-        ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_EMULATION.value
-        ret.alphaLongitudinalAvailable = alpha_long
-        ret.openpilotLongitudinalControl = True
-        # vision-only lead, so E2E / Experimental Mode drives gas and brake
-        ret.radarUnavailable = True
-        # engagement still follows the stock MRCC set/cancel edge
-        ret.pcmCruise = True
-        ret.startingState = True
-        ret.startAccel = 1.2
-        ret.vEgoStarting = 0.15
-        ret.vEgoStopping = 0.5
-        ret.longitudinalActuatorDelay = 0.36
-        ret.longitudinalTuning.kpBP = [0., 5., 20.]
-        ret.longitudinalTuning.kpV = [1.2, 1.0, 0.8]
-        ret.longitudinalTuning.kiBP = [0., 5., 20.]
-        ret.longitudinalTuning.kiV = [0.18, 0.12, 0.08]
-      if p.get_bool("NoMRCC"): # No Mazda Radar Cruise Control; Missing CRZ_CTRL signal
+      if p.get_bool("NoMRCC"):
         ret.flags |= MazdaSafetyFlags.NO_MRCC.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.NO_MRCC.value
-      if p.get_bool("NoFSC"):  # No Front Sensing Camera
+      if p.get_bool("NoFSC"):
         ret.flags |= MazdaSafetyFlags.NO_FSC.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.NO_FSC.value
 
@@ -143,7 +109,7 @@ class CarInterface(CarInterfaceBase):
       ret.openpilotLongitudinalControl = True
       ret.stopAccel = -.5
       ret.vEgoStarting = .2
-      ret.longitudinalActuatorDelay = 0.35 # gas is 0.25s and brake looks like 0.5
+      ret.longitudinalActuatorDelay = 0.35
       ret.longitudinalTuning.kpBP = [0., 5., 35.]
       ret.longitudinalTuning.kpV = [0.0, 0.0, 0.0]
       ret.longitudinalTuning.kiBP = [0., 35.]
@@ -164,10 +130,10 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send):
-    # ON = lateral only. UDS/emulation starts on first SET (see card.py).
+    # ON = lateral control only. Factory radar/ACC remain on the vehicle.
     return
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
-    if CP.flags & MazdaSafetyFlags.RADAR_EMULATION:
-      request_radar_default_session(can_recv, can_send)
+    # No radar UDS/emulation session is used in stock-radar mode.
+    return
