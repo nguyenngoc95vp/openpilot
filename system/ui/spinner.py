@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from dataclasses import dataclass
+import math
 import pyray as rl
 import select
 import sys
@@ -47,10 +48,14 @@ SMALL_THEME = SpinnerTheme(
 )
 
 
-DEGREES_PER_SECOND = 360.0  # one full rotation per second
+DEGREES_PER_SECOND = 360.0
 SMALL_MAX_WRAPPED_LINES = 4
 PROGRESS_LABEL_SPACING = 12
 DARKGRAY = (55, 55, 55, 255)
+BRAND = "ngocdepzai"
+BRAND_SPEED = 0.75
+BRAND_MARGIN = 90
+BRAND_BLINK_SPEED = 4.0
 
 
 def clamp(value, min_value, max_value):
@@ -64,6 +69,7 @@ class Spinner(Widget):
     self._comma_texture = gui_app.texture("images/spinner_comma.png", self._theme.texture_size, self._theme.texture_size)
     self._spinner_texture = gui_app.texture("images/spinner_track.png", self._theme.texture_size, self._theme.texture_size, alpha_premultiply=True)
     self._rotation = 0.0
+    self._brand_phase = 0.0
     self._progress: int | None = None
     self._wrapped_lines: list[str] = []
     self._text_font_size = self._theme.text_font_size
@@ -118,6 +124,25 @@ class Spinner(Widget):
     )
     rl.draw_texture_v(self._comma_texture, comma_position, rl.WHITE)
 
+  def _draw_branding(self, rect: rl.Rectangle) -> None:
+    # Move the branding around an elliptical path near the screen edges and
+    # pulse its alpha so the loading screen has the requested animated effect.
+    t = self._brand_phase
+    cx = rect.x + rect.width / 2.0
+    cy = rect.y + rect.height / 2.0
+    rx = max(0.0, rect.width / 2.0 - BRAND_MARGIN)
+    ry = max(0.0, rect.height / 2.0 - BRAND_MARGIN)
+    x = cx + math.cos(t) * rx
+    y = cy + math.sin(t) * ry
+
+    font = gui_app.font(FontWeight.BOLD)
+    font_size = 30 if not gui_app.big_ui() else 44
+    text_size = measure_text_cached(font, BRAND, font_size)
+    pulse = 0.5 + 0.5 * math.sin(t * BRAND_BLINK_SPEED)
+    alpha = int(70 + 185 * pulse)
+    text_color = rl.Color(255, 255, 255, alpha)
+    rl.draw_text_ex(font, BRAND, rl.Vector2(x - text_size.x / 2.0, y - text_size.y / 2.0), font_size, 0.0, text_color)
+
   def _render(self, rect: rl.Rectangle):
     total_height = self._content_height()
     top_y = rect.y + (rect.height - total_height) / 2.0
@@ -129,8 +154,10 @@ class Spinner(Widget):
 
     delta_time = rl.get_frame_time()
     self._rotation = (self._rotation + DEGREES_PER_SECOND * delta_time) % 360.0
+    self._brand_phase = (self._brand_phase + BRAND_SPEED * delta_time) % (2.0 * math.pi)
 
     self._draw_spinner(center_x, center_y)
+    self._draw_branding(rect)
 
     if self._progress is not None:
       bar = rl.Rectangle(
@@ -172,7 +199,7 @@ def _read_stdin():
 
 
 def main():
-  gui_app.init_window("Spinner")
+  gui_app.init_window("ngocdepzai")
   spinner = Spinner()
   for _ in gui_app.render():
     text_list = _read_stdin()
