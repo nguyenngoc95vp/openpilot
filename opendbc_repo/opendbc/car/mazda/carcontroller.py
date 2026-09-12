@@ -49,6 +49,7 @@ class CarController(CarControllerBase):
     self.resume_ctrl_active_prev = False
     self.virtual_resume_sent_latched = False
     self.resume_button_prev = False
+    self.emu_session = False
     self.params = Params()
     self.params_memory = Params("/dev/shm/params")
 
@@ -79,6 +80,8 @@ class CarController(CarControllerBase):
       virtual_resume_sent = False
 
       if radar_emulation:
+        if CC.longActive:
+          self.emu_session = True
         # openpilot owns CRZ_CTRL here, so a cancel is done by dropping the synthetic
         # ACC-active state rather than spamming CRZ_BTNS. A RES press is still needed
         # to ask the chassis to release the HOLD latch after a full stop.
@@ -217,19 +220,19 @@ class CarController(CarControllerBase):
             accel = min(accel, near_stop_brake_accel(CS.out.vEgo))
 
         # hold the stock radar in its UDS programming session so it stays silent
-        if self.frame % TESTER_PRESENT_STEP == 0:
+        if self.emu_session and self.frame % TESTER_PRESENT_STEP == 0:
           can_sends.append(create_radar_tester_present(RADAR_BUS))
 
         lead_visible = CC.hudControl.leadVisible
         synthetic_radar_lead = CC.longActive and (lead_visible or stop_go_request or standstill_hold_request or hold_latched or
                                                   crz_hold_latched or crz_hold_passive or crz_ctrl_resume_active or
                                                   stop_go_release_requested or release_brake or starting)
-        if self.frame % RADAR_HEARTBEAT_STEP == 0:
+        if self.emu_session and self.frame % RADAR_HEARTBEAT_STEP == 0:
           for bus in (RADAR_BUS, CAM_BUS):
             can_sends.extend(create_radar_heartbeat_messages(bus, self.radar_counter, synthetic_lead=synthetic_radar_lead))
           self.radar_counter = (self.radar_counter + 1) % 16
 
-        if self.frame % LONG_COMMAND_STEP == 0:
+        if self.emu_session and self.frame % LONG_COMMAND_STEP == 0:
           for bus in (RADAR_BUS, CAM_BUS):
             can_sends.extend(create_longitudinal_messages(bus, accel, self.long_counter,
                                                           CC.longActive, lead_visible,

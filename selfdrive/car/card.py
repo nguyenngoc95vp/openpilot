@@ -388,6 +388,17 @@ class Car:
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self._update_redneck_cruise(CS, CC)
       self._update_openpilot_lead_state(CC)
+      if (CC.longActive and not getattr(self, "_mazda_emu_session", False)
+          and self.CP.brand == "mazda"
+          and self.params.get_bool("RadarEmulationEnabled")
+          and not self.params.get_bool("RadarInterceptorEnabled")):
+        try:
+          from opendbc.car.mazda.longitudinal import enter_radar_programming_session
+          enter_radar_programming_session(*self.can_callbacks)
+          self._mazda_emu_session = True
+          cloudlog.warning("mazda radar emulation started on SET")
+        except Exception:
+          cloudlog.exception("mazda radar emulation session failed")
       if self.CP.brand == "rivian" and self.sm.all_checks(['liveParameters']) and hasattr(self.CI.CC, 'update_live_params'):
         live_params = self.sm['liveParameters']
         self.CI.CC.update_live_params(live_params.roll, live_params.angleOffsetDeg,

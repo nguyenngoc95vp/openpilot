@@ -164,8 +164,8 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send):
-    if CP.flags & MazdaSafetyFlags.RADAR_EMULATION:
-      enter_radar_programming_session(can_recv, can_send)
+    # ON = lateral only. UDS/emulation starts on first SET (see card.py).
+    return
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
