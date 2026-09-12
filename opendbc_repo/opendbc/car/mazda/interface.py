@@ -110,8 +110,8 @@ class CarInterface(CarInterfaceBase):
       # Software radar emulation. Only when no hardware Radar Interceptor is installed:
       # the two paths both own CRZ_INFO/CRZ_CTRL and must never run together.
       # TI + no RI hardware: always use software radar emulation.
-emu = p.get_bool("RadarEmulationEnabled") or (p.get_bool("TorqueInterceptorEnabled") and not p.get_bool("RadarInterceptorEnabled"))
-if emu and not p.get_bool("RadarInterceptorEnabled"):
+      emu = p.get_bool("RadarEmulationEnabled") or (p.get_bool("TorqueInterceptorEnabled") and not p.get_bool("RadarInterceptorEnabled"))
+      if emu and not p.get_bool("RadarInterceptorEnabled"):
         ret.flags |= MazdaSafetyFlags.RADAR_EMULATION.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_EMULATION.value
         ret.alphaLongitudinalAvailable = alpha_long
