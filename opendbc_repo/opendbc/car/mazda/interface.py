@@ -64,12 +64,10 @@ class CarInterface(CarInterfaceBase):
     p = Params()
 
     # CX-8 Gen1 uses the factory radar and factory Mazda ACC for longitudinal control.
-    # openpilot/TI are lateral-only. Do not enable Radar Emulation or Radar Interceptor.
+    # openpilot/TI are lateral-only. Radar emulation/interceptor hooks are disabled.
     ret.radarUnavailable = False
     ret.pcmCruise = True
     ret.openpilotLongitudinalControl = False
-    p.put_bool("RadarEmulationEnabled", False)
-    p.put_bool("RadarInterceptorEnabled", False)
 
     ret.dashcamOnly = False
     ret.steerLimitTimer = 0.8
@@ -130,10 +128,9 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send):
-    # ON = lateral control only. Factory radar/ACC remain on the vehicle.
+    # No radar emulation/interceptor session is used in stock-radar mode.
     return
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
-    # No radar UDS/emulation session is used in stock-radar mode.
     return
