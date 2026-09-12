@@ -88,7 +88,7 @@ class CarInterface(CarInterfaceBase):
       ret.transmissionType = structs.CarParams.TransmissionType.automatic
 
     if candidate in GEN1:
-      ret.steerActuatorDelay = 0.335
+      ret.steerActuatorDelay = 0.1
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.GEN1.value
       if p.get_bool("TorqueInterceptorEnabled"):
         ret.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
