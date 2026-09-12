@@ -109,7 +109,9 @@ class CarInterface(CarInterfaceBase):
         ret.longitudinalTuning.kiV = [0.36, 0.23, 0.17, 0.1]
       # Software radar emulation. Only when no hardware Radar Interceptor is installed:
       # the two paths both own CRZ_INFO/CRZ_CTRL and must never run together.
-      if p.get_bool("RadarEmulationEnabled") and not p.get_bool("RadarInterceptorEnabled"):
+      # TI + no RI hardware: always use software radar emulation.
+emu = p.get_bool("RadarEmulationEnabled") or (p.get_bool("TorqueInterceptorEnabled") and not p.get_bool("RadarInterceptorEnabled"))
+if emu and not p.get_bool("RadarInterceptorEnabled"):
         ret.flags |= MazdaSafetyFlags.RADAR_EMULATION.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_EMULATION.value
         ret.alphaLongitudinalAvailable = alpha_long
