@@ -725,7 +725,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"WheelToDownload", {CLEAR_ON_MANAGER_START, STRING, "", ""}},
     {"TorqueInterceptorEnabled", {PERSISTENT, BOOL, "1", "1"}},
     {"RadarInterceptorEnabled", {PERSISTENT, BOOL}},
-    {"RadarEmulationEnabled", {PERSISTENT, BOOL}},
+    {"RadarEmulationEnabled", {PERSISTENT, BOOL, "0", "0"}},
     {"NoMRCC", {PERSISTENT, BOOL}},
     {"NoFSC", {PERSISTENT, BOOL}},
     {"BlendedACC", {PERSISTENT, BOOL, "1", "1"}},

@@ -398,8 +398,10 @@ class BigParamControl(BigToggle):
     self.set_checked(self.params.get_bool(self.param, False))
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
-    super()._handle_mouse_release(mouse_pos)
+    self._checked = not self._checked
     self.params.put_bool(self.param, self._checked)
+    if self._toggle_callback:
+      self._toggle_callback(self._checked)
 
   def refresh(self):
     self.set_checked(self.params.get_bool(self.param, False))
