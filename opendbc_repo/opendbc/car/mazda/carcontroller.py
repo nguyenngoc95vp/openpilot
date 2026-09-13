@@ -24,6 +24,11 @@ CRZ_INFO_RESUME_PHASE_FRAMES = int(round(0.20 / DT_CTRL))
 HOLD_REQUEST_FRAMES = int(round(6.0 / DT_CTRL))
 RESUME_RELEASE_FRAMES = int(round(0.5 / DT_CTRL))
 
+# TI driver handover: release immediately while the driver is applying steering,
+# then wait 100 ms after release before smoothly returning authority to OP + TI.
+DRIVER_TAKEOVER_DELAY_FRAMES = int(round(0.1 / DT_CTRL))
+TI_REENGAGE_RAMP_FRAMES = int(round(0.5 / DT_CTRL))
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -50,6 +55,10 @@ class CarController(CarControllerBase):
     self.virtual_resume_sent_latched = False
     self.resume_button_prev = False
     self.emu_session = False
+    # TI driver handover state. This does not change TI state/RUN status.
+    self.driver_takeover = False
+    self.driver_takeover_delay_frames = 0
+    self.ti_reengage_frames = 0
     self.params = Params()
     self.params_memory = Params("/dev/shm/params")
 
@@ -61,6 +70,25 @@ class CarController(CarControllerBase):
     apply_torque = 0
     ti_apply_torque = 0
 
+    # Driver-touch handover is based on the existing TI steering-touch signal.
+    # While touched, suppress both OP and TI steering output without changing
+    # TI feedback state, so TI can remain RUN. After release, wait exactly 100 ms
+    # and then ramp the previously requested steering back in over 0.5 s.
+    if self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
+      driver_touch = bool(CS.out.steeringPressed)
+      if driver_touch:
+        self.driver_takeover = True
+        self.driver_takeover_delay_frames = DRIVER_TAKEOVER_DELAY_FRAMES
+        self.ti_reengage_frames = 0
+      elif self.driver_takeover:
+        if self.driver_takeover_delay_frames > 0:
+          self.driver_takeover_delay_frames -= 1
+        else:
+          self.driver_takeover = False
+          self.ti_reengage_frames = TI_REENGAGE_RAMP_FRAMES
+      elif self.ti_reengage_frames > 0:
+        self.ti_reengage_frames -= 1
+
     if CC.latActive:
       # calculate steer and also set limits due to driver torque
       new_torque = int(round(CC.actuators.torque * self.ccp.STEER_MAX))
@@ -71,6 +99,14 @@ class CarController(CarControllerBase):
           ti_new_torque = int(round(CC.actuators.torque * self.ccp.STEER_MAX))
           ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.apply_torque_last,
                                                     CS.out.steeringTorque, self.ccp)
+
+    if self.driver_takeover:
+      apply_torque = 0
+      ti_apply_torque = 0
+    elif self.ti_reengage_frames > 0:
+      ramp_progress = 1.0 - (self.ti_reengage_frames / TI_REENGAGE_RAMP_FRAMES)
+      apply_torque = int(round(apply_torque * ramp_progress))
+      ti_apply_torque = int(round(ti_apply_torque * ramp_progress))
 
     self.apply_torque_last = apply_torque
     self.ti_apply_torque_last = ti_apply_torque
