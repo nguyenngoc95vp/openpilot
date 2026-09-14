@@ -7,8 +7,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarInterfaceBase, TorqueFromLateralAccelCallbackType, LateralAccelFromTorqueCallbackType
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
-from opendbc.car.mazda.longitudinal import enter_radar_programming_session, request_radar_default_session
-from opendbc.car.mazda.values import CAR, LKAS_LIMITS, MazdaSafetyFlags, MazdaSafetyFlags, GEN1, GEN2, GEN3
+from opendbc.car.mazda.values import CAR, LKAS_LIMITS, MazdaSafetyFlags, GEN1, GEN2, GEN3
 from openpilot.common.params import Params
 
 NON_LINEAR_TORQUE_PARAMS = {
@@ -91,11 +90,18 @@ class CarInterface(CarInterfaceBase):
     if candidate in GEN1:
       ret.steerActuatorDelay = 0.335
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.GEN1.value
+
+      # CX-8/GEN1 default: Mazda stock longitudinal only.
+      # Radar emulation is intentionally disabled and is never enabled from TI.
+      ret.openpilotLongitudinalControl = False
+      ret.alphaLongitudinalAvailable = False
+
       if p.get_bool("TorqueInterceptorEnabled"): # Torque Interceptor Installed
         ret.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.minSteerSpeed = 0.0
         ret.steerAtStandstill = True
+
       if p.get_bool("RadarInterceptorEnabled"): # Radar Interceptor Installed
         ret.flags |= MazdaSafetyFlags.RADAR_INTERCEPTOR.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_INTERCEPTOR.value
@@ -107,32 +113,11 @@ class CarInterface(CarInterfaceBase):
         ret.longitudinalTuning.kpV = [1.3, 1.0, 0.7]
         ret.longitudinalTuning.kiBP = [0., 5., 20., 30.]
         ret.longitudinalTuning.kiV = [0.36, 0.23, 0.17, 0.1]
-      # Software radar emulation. Only when no hardware Radar Interceptor is installed:
-      # the two paths both own CRZ_INFO/CRZ_CTRL and must never run together.
-      # TI + no RI hardware: always use software radar emulation.
-      emu = p.get_bool("RadarEmulationEnabled") or (p.get_bool("TorqueInterceptorEnabled") and not p.get_bool("RadarInterceptorEnabled"))
-      if emu and not p.get_bool("RadarInterceptorEnabled"):
-        ret.flags |= MazdaSafetyFlags.RADAR_EMULATION.value
-        ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_EMULATION.value
-        ret.alphaLongitudinalAvailable = alpha_long
-        ret.openpilotLongitudinalControl = True
-        # vision-only lead, so E2E / Experimental Mode drives gas and brake
-        ret.radarUnavailable = True
-        # engagement still follows the stock MRCC set/cancel edge
-        ret.pcmCruise = True
-        ret.startingState = True
-        ret.startAccel = 1.2
-        ret.vEgoStarting = 0.15
-        ret.vEgoStopping = 0.5
-        ret.longitudinalActuatorDelay = 0.36
-        ret.longitudinalTuning.kpBP = [0., 5., 20.]
-        ret.longitudinalTuning.kpV = [1.2, 1.0, 0.8]
-        ret.longitudinalTuning.kiBP = [0., 5., 20.]
-        ret.longitudinalTuning.kiV = [0.18, 0.12, 0.08]
+
       if p.get_bool("NoMRCC"): # No Mazda Radar Cruise Control; Missing CRZ_CTRL signal
         ret.flags |= MazdaSafetyFlags.NO_MRCC.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.NO_MRCC.value
-      if p.get_bool("NoFSC"):  # No Front Sensing Camera
+      if p.get_bool("NoFSC"): # No Front Sensing Camera
         ret.flags |= MazdaSafetyFlags.NO_FSC.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.NO_FSC.value
 
@@ -164,10 +149,9 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send):
-    # ON = lateral only. UDS/emulation starts on first SET (see card.py).
+    # ON = lateral only for GEN1. Radar emulation is disabled.
     return
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
-    if CP.flags & MazdaSafetyFlags.RADAR_EMULATION:
-      request_radar_default_session(can_recv, can_send)
+    return
