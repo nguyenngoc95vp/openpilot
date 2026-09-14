@@ -22,11 +22,7 @@ class CarInterface(CarInterfaceBase):
   CarController = CarController
 
   def get_lataccel_torque_siglin(self) -> float:
-
     def torque_from_lateral_accel_siglin_func(lateral_acceleration: float) -> float:
-      # The "lat_accel vs torque" relationship is assumed to be the sum of "sigmoid + linear" curves
-      # An important thing to consider is that the slope at 0 should be > 0 (ideally >1)
-      # This has big effect on the stability about 0 (noise when going straight)
       non_linear_torque_params = NON_LINEAR_TORQUE_PARAMS.get(self.CP.carFingerprint)
       assert non_linear_torque_params, "The params are not defined"
       a, b, c, _ = non_linear_torque_params
@@ -34,7 +30,6 @@ class CarInterface(CarInterfaceBase):
       sig = np.sign(sig_input) * (1 / (1 + exp(-fabs(sig_input))) - 0.5)
       steer_torque = (sig * b) + (lateral_acceleration * c)
       return float(steer_torque)
-
     lataccel_values = np.arange(-8.0, 8.0, 0.01)
     torque_values = [torque_from_lateral_accel_siglin_func(x) for x in lataccel_values]
     print(torque_values)
@@ -44,7 +39,6 @@ class CarInterface(CarInterfaceBase):
   def torque_from_lateral_accel(self) -> TorqueFromLateralAccelCallbackType:
     if self.CP.carFingerprint in NON_LINEAR_TORQUE_PARAMS:
       torque_values, lataccel_values = self.get_lataccel_torque_siglin()
-
       def torque_from_lateral_accel_siglin(lateral_acceleration: float, torque_params: structs.CarParams.LateralTorqueTuning):
         return np.interp(lateral_acceleration, lataccel_values, torque_values)
       return torque_from_lateral_accel_siglin
@@ -54,31 +48,24 @@ class CarInterface(CarInterfaceBase):
   def lateral_accel_from_torque(self) -> LateralAccelFromTorqueCallbackType:
     if self.CP.carFingerprint in NON_LINEAR_TORQUE_PARAMS:
       torque_values, lataccel_values = self.get_lataccel_torque_siglin()
-
       def lateral_accel_from_torque_siglin(torque: float, torque_params: structs.CarParams.LateralTorqueTuning):
         return np.interp(torque, torque_values, lataccel_values)
       return lateral_accel_from_torque_siglin
     else:
       return self.lateral_accel_from_torque_linear
 
-
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
     ret.brand = "mazda"
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.mazda)]
     p = Params()
-
     ret.radarUnavailable = True
-
     ret.dashcamOnly = False
-
     ret.steerLimitTimer = 0.8
-
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
 
     if candidate not in (CAR.MAZDA_CX5_2022, CAR.MAZDA_3_2019, CAR.MAZDA_CX_30, CAR.MAZDA_CX_50, CAR.MAZDA_3_2023, CAR.MAZDA_CX_30_2023):
       ret.minSteerSpeed = LKAS_LIMITS.DISABLE_SPEED * CV.KPH_TO_MS
-
     ret.enableBsm = True
 
     if p.get_bool("ManualTransmission"):
@@ -88,21 +75,18 @@ class CarInterface(CarInterfaceBase):
       ret.transmissionType = structs.CarParams.TransmissionType.automatic
 
     if candidate in GEN1:
-      ret.steerActuatorDelay = 0.335
+      ret.steerActuatorDelay = 0.1
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.GEN1.value
-
-      # CX-8/GEN1 default: Mazda stock longitudinal only.
-      # Radar emulation is intentionally disabled and is never enabled from TI.
       ret.openpilotLongitudinalControl = False
       ret.alphaLongitudinalAvailable = False
 
-      if p.get_bool("TorqueInterceptorEnabled"): # Torque Interceptor Installed
+      if p.get_bool("TorqueInterceptorEnabled"):
         ret.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.minSteerSpeed = 0.0
         ret.steerAtStandstill = True
 
-      if p.get_bool("RadarInterceptorEnabled"): # Radar Interceptor Installed
+      if p.get_bool("RadarInterceptorEnabled"):
         ret.flags |= MazdaSafetyFlags.RADAR_INTERCEPTOR.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.RADAR_INTERCEPTOR.value
         ret.alphaLongitudinalAvailable = alpha_long
@@ -114,10 +98,10 @@ class CarInterface(CarInterfaceBase):
         ret.longitudinalTuning.kiBP = [0., 5., 20., 30.]
         ret.longitudinalTuning.kiV = [0.36, 0.23, 0.17, 0.1]
 
-      if p.get_bool("NoMRCC"): # No Mazda Radar Cruise Control; Missing CRZ_CTRL signal
+      if p.get_bool("NoMRCC"):
         ret.flags |= MazdaSafetyFlags.NO_MRCC.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.NO_MRCC.value
-      if p.get_bool("NoFSC"): # No Front Sensing Camera
+      if p.get_bool("NoFSC"):
         ret.flags |= MazdaSafetyFlags.NO_FSC.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.NO_FSC.value
 
@@ -128,7 +112,7 @@ class CarInterface(CarInterfaceBase):
       ret.openpilotLongitudinalControl = True
       ret.stopAccel = -.5
       ret.vEgoStarting = .2
-      ret.longitudinalActuatorDelay = 0.35 # gas is 0.25s and brake looks like 0.5
+      ret.longitudinalActuatorDelay = 0.35
       ret.longitudinalTuning.kpBP = [0., 5., 35.]
       ret.longitudinalTuning.kpV = [0.0, 0.0, 0.0]
       ret.longitudinalTuning.kiBP = [0., 35.]
@@ -149,7 +133,6 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send):
-    # ON = lateral only for GEN1. Radar emulation is disabled.
     return
 
   @staticmethod
