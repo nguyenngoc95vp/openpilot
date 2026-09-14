@@ -33,6 +33,7 @@ class CarState(CarStateBase):
     self.ti_violation = 0
     self.ti_error = 0
     self.ti_lkas_allowed = False
+    self.ti_driver_over = False
 
     self._prev_steering_angle = 0
 
@@ -49,7 +50,7 @@ class CarState(CarStateBase):
 
     prev_distance_button = self.distance_button
     self.distance_button = cp.vl["CRZ_BTNS"]["DISTANCE_LESS"]
-    # CX-9 has a dedicated RES button; some Mazdas emit SET_P for the wheel "+" instead
+    # CX-9 has a dedicated RES button; some Mazdas emit SET_P for the wheel "+"
     self.accel_button = int(cp.vl["CRZ_BTNS"]["RES"] == 1 or cp.vl["CRZ_BTNS"]["SET_P"] == 1)
 
     self.parse_wheel_speeds(ret,
@@ -81,12 +82,21 @@ class CarState(CarStateBase):
       self.ti_error = cp_body.vl["TI_FEEDBACK"]["ERROR"] # 0 = no error
       if self.ti_version > 1:
         self.ti_ramp_down = (cp_body.vl["TI_FEEDBACK"]["RAMP_DOWN"] == 1)
+      else:
+        self.ti_ramp_down = False
 
       ret.steeringPressed = abs(ret.steeringTorque) > LKAS_LIMITS.TI_STEER_THRESHOLD
-      self.ti_lkas_allowed = not self.ti_ramp_down and self.ti_state == TI_STATE.RUN
+      self.ti_driver_over = self.ti_state == TI_STATE.DRIVER_OVER and ret.steeringPressed
+      # DRIVER_OVER caused by an actual driver takeover is handled by the controller:
+      # it outputs zero torque while continuing CAM_LKAS2 heartbeat. Do not turn this
+      # expected handover state into a steering fault. Genuine TI error/violation or
+      # ramp-down remains a fault condition.
+      self.ti_lkas_allowed = (not self.ti_ramp_down and self.ti_violation == 0 and self.ti_error == 0 and
+                              (self.ti_state == TI_STATE.RUN or self.ti_driver_over))
     else:
       ret.steeringTorque = cp.vl["STEER_TORQUE"]["STEER_TORQUE_SENSOR"]
       ret.steeringPressed = abs(ret.steeringTorque) > LKAS_LIMITS.STEER_THRESHOLD
+      self.ti_driver_over = False
 
     ret.steeringAngleDeg = cp.vl["STEER"]["STEER_ANGLE"]
 
@@ -154,10 +164,9 @@ class CarState(CarStateBase):
           self.low_speed_alert = False
       ret.lowSpeedAlert = self.low_speed_alert
 
-    # Check if LKAS is disabled due to lack of driver torque when all other states indicate
-    # it should be enabled (steer lockout). Don't warn until we actually get lkas active
-    # and lose it again, i.e, after initial lkas activation
-    ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked and not self.ti_lkas_allowed
+    # A genuine TI fault still raises steerFaultTemporary. A DRIVER_OVER state caused
+    # by driver torque is an expected handover and is intentionally not treated as a fault.
+    ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked and not self.ti_lkas_allowed and not self.ti_driver_over
 
     self.acc_active_last = ret.cruiseState.enabled
 
