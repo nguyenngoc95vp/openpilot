@@ -25,9 +25,8 @@ HOLD_REQUEST_FRAMES = int(round(6.0 / DT_CTRL))
 RESUME_RELEASE_FRAMES = int(round(0.5 / DT_CTRL))
 
 # TI driver handover: release immediately while the driver is applying steering,
-# then wait 100 ms after release before smoothly returning authority to OP + TI.
+# then wait 100 ms after release before returning authority to OP + TI.
 DRIVER_TAKEOVER_DELAY_FRAMES = int(round(0.1 / DT_CTRL))
-TI_REENGAGE_RAMP_FRAMES = int(round(0.5 / DT_CTRL))
 
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
@@ -58,7 +57,6 @@ class CarController(CarControllerBase):
     # TI driver handover state. This does not change TI state/RUN status.
     self.driver_takeover = False
     self.driver_takeover_delay_frames = 0
-    self.ti_reengage_frames = 0
     self.params = Params()
     self.params_memory = Params("/dev/shm/params")
 
@@ -73,21 +71,17 @@ class CarController(CarControllerBase):
     # Driver-touch handover is based on the existing TI steering-touch signal.
     # While touched, suppress both OP and TI steering output without changing
     # TI feedback state, so TI can remain RUN. After release, wait exactly 100 ms
-    # and then ramp the previously requested steering back in over 0.5 s.
+    # and then immediately return authority to OP + TI, subject to normal torque limits.
     if self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
       driver_touch = bool(CS.out.steeringPressed)
       if driver_touch:
         self.driver_takeover = True
         self.driver_takeover_delay_frames = DRIVER_TAKEOVER_DELAY_FRAMES
-        self.ti_reengage_frames = 0
       elif self.driver_takeover:
         if self.driver_takeover_delay_frames > 0:
           self.driver_takeover_delay_frames -= 1
         else:
           self.driver_takeover = False
-          self.ti_reengage_frames = TI_REENGAGE_RAMP_FRAMES
-      elif self.ti_reengage_frames > 0:
-        self.ti_reengage_frames -= 1
 
     if CC.latActive:
       # calculate steer and also set limits due to driver torque
@@ -103,10 +97,6 @@ class CarController(CarControllerBase):
     if self.driver_takeover:
       apply_torque = 0
       ti_apply_torque = 0
-    elif self.ti_reengage_frames > 0:
-      ramp_progress = 1.0 - (self.ti_reengage_frames / TI_REENGAGE_RAMP_FRAMES)
-      apply_torque = int(round(apply_torque * ramp_progress))
-      ti_apply_torque = int(round(ti_apply_torque * ramp_progress))
 
     self.apply_torque_last = apply_torque
     self.ti_apply_torque_last = ti_apply_torque
@@ -118,47 +108,30 @@ class CarController(CarControllerBase):
       if radar_emulation:
         if CC.longActive:
           self.emu_session = True
-        # openpilot owns CRZ_CTRL here, so a cancel is done by dropping the synthetic
-        # ACC-active state rather than spamming CRZ_BTNS. A RES press is still needed
-        # to ask the chassis to release the HOLD latch after a full stop.
         self.brake_counter = 0
         if CS.out.standstill and CC.cruiseControl.resume and self.frame % 5 == 0:
           can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME))
           virtual_resume_sent = True
       elif CC.cruiseControl.cancel:
-        # If brake is pressed, let us wait >70ms before trying to disable crz to avoid
-        # a race condition with the stock system, where the second cancel from openpilot
-        # will disable the crz 'main on'. crz ctrl msg runs at 50hz. 70ms allows us to
-        # read 3 messages and most likely sync state before we attempt cancel.
         self.brake_counter = self.brake_counter + 1
         if self.frame % 10 == 0 and not (CS.out.brakePressed and self.brake_counter < 7):
-          # Cancel Stock ACC if it's enabled while OP is disengaged
-          # Send at a rate of 10hz until we sync with stock ACC state
           can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.CANCEL))
       elif not radar_emulation:
         self.brake_counter = 0
         if CC.cruiseControl.resume and self.frame % 5 == 0:
-          # Mazda Stop and Go requires a RES button (or gas) press if the car stops more than 3 seconds
-          # Send Resume button when planner wants car to move
           can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME))
 
       # send HUD alerts
       if self.frame % 50 == 0:
         ldw = CC.hudControl.visualAlert == VisualAlert.ldw
         steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
-        # TODO: find a way to silence audible warnings so we can add more hud alerts
         steer_required = steer_required and CS.lkas_allowed_speed
         can_sends.append(mazdacan.create_alert_command(self.packer, CS.cam_laneinfo, ldw, steer_required))
 
       if radar_emulation:
         stopping = CC.actuators.longControlState == LongCtrlState.stopping
         starting = CC.actuators.longControlState == LongCtrlState.starting
-        # Do not treat tiny positive low-speed PID noise as a real restart request.
-        # Only the explicit upstream starting phase releases the synthetic HOLD clamp.
         restart_requested = starting
-        # Physical wheel RES survives radar suppression on CRZ_BTNS. For virtual RES,
-        # do not start the synthetic unlatch path until the first RES frame has
-        # actually been transmitted on the bus.
         if not CC.cruiseControl.resume or not CS.out.standstill:
           self.virtual_resume_sent_latched = False
         elif virtual_resume_sent:
@@ -182,9 +155,6 @@ class CarController(CarControllerBase):
             self.stop_intent_latched = True
 
           hold_latched_ready = CS.out.standstill and self.standstill_hold_frames > HOLD_REQUEST_FRAMES
-          # A physical wheel RES should always be able to ask Mazda to leave HOLD. For
-          # virtual RES, require both an actually-sent RES frame and the latched-hold
-          # phase so a transient shouldStop flicker cannot release the hold early.
           physical_resume_unlatch_requested = CS.out.standstill and physical_resume_requested and (not stopping or hold_latched_ready)
           virtual_resume_unlatch_requested = CS.out.standstill and virtual_resume_requested and hold_latched_ready
           resume_unlatch_requested = physical_resume_unlatch_requested or virtual_resume_unlatch_requested
@@ -199,8 +169,6 @@ class CarController(CarControllerBase):
             self.standstill_hold_frames = 0
 
           if CS.out.standstill and not base_release_hold_requested and resume_rising_edge and self.standstill_hold_frames >= CRZ_CTRL_PASSIVE_FRAMES:
-            # Stock briefly re-enables ACC in the latched-hold profile when RES is first
-            # pressed, then drops back into the active stop-go profile.
             self.resume_crz_latched_frames = CRZ_CTRL_RESUME_REACTIVATE_FRAMES
           elif self.resume_crz_latched_frames > 0:
             self.resume_crz_latched_frames -= 1
@@ -217,9 +185,6 @@ class CarController(CarControllerBase):
           if release_hold_requested or (not CS.out.standstill and not stopping and CS.out.vEgo > NEAR_STOP_ENTRY_SPEED):
             self.stop_intent_latched = False
 
-        # Only enter the synthetic stop-go/HOLD path once upstream has actually
-        # committed to a stop; keep it latched through standstill until a real
-        # restart or a driver override releases it.
         stop_go_request = CC.longActive and self.stop_intent_latched and not release_hold_requested
         standstill_hold_request = stop_go_request and CS.out.standstill
         hold_latched = standstill_hold_request and self.standstill_hold_frames > HOLD_REQUEST_FRAMES
@@ -227,8 +192,6 @@ class CarController(CarControllerBase):
 
         crz_hold_latched = standstill_hold_request and self.standstill_hold_frames >= CRZ_CTRL_LATCH_FRAMES and \
                            (not effective_resume_requested or self.resume_crz_latched_frames > 0)
-        # Stock resumes from passive hold by re-enabling ACC while RES is held, instead
-        # of sitting indefinitely in the passive-hold substate.
         crz_hold_passive = standstill_hold_request and self.standstill_hold_frames >= CRZ_CTRL_PASSIVE_FRAMES and not effective_resume_requested
         release_brake = self.resume_release_frames > 0
         crz_ctrl_resume_active = release_brake and CS.out.vEgo < self.CP.vEgoStarting and not crz_hold_latched and not crz_hold_passive
@@ -241,8 +204,6 @@ class CarController(CarControllerBase):
           self.resume_phase_frames = 0
         crz_info_resume_unlatching = crz_ctrl_resume_active and self.resume_phase_frames > 0
         self.resume_ctrl_active_prev = crz_ctrl_resume_active
-        # Keep CRZ_INFO stop bits cleared through the whole synthetic brake-release
-        # window, or Mazda sees positive accel while we still advertise an active stop.
         crz_info_hold_request = stop_go_request and not (brake_release_requested or release_brake)
 
         accel = 0.0
@@ -255,7 +216,6 @@ class CarController(CarControllerBase):
           elif self.stop_intent_latched and not release_hold_requested and (stopping or CS.out.vEgo < NEAR_STOP_ENTRY_SPEED):
             accel = min(accel, near_stop_brake_accel(CS.out.vEgo))
 
-        # hold the stock radar in its UDS programming session so it stays silent
         if self.emu_session and self.frame % TESTER_PRESENT_STEP == 0:
           can_sends.append(create_radar_tester_present(RADAR_BUS))
 
@@ -331,7 +291,7 @@ class CarController(CarControllerBase):
 
       resume = False
       hold = False
-      if self.frame % 2 == 0: # send ACC command at 50hz
+      if self.frame % 2 == 0:
         """
         Without this hold/resum logic, the car will only stop momentarily.
         It will then start creeping forward again. This logic allows the car to
@@ -339,20 +299,20 @@ class CarController(CarControllerBase):
         bug with the stock ACC where it sometimes will apply the brakes too early
         when coming to a stop.
         """
-        if CS.out.standstill: # if we're stopped
-          if not ((self.frame - self.hold_delay_frame) < 50): # and we have been stopped for more than hold_delay duration. This prevents a hard brake if we aren't fully stopped.
+        if CS.out.standstill:
+          if not ((self.frame - self.hold_delay_frame) < 50):
             if ((CC.cruiseControl.resume and CC.actuators.longControlState != LongCtrlState.stopping) or
                 CC.cruiseControl.override or CS.out.gasPressed or
-                (CC.actuators.longControlState == LongCtrlState.starting) or CS.acc["RESUME"]): # if we are resuming or overriding, we want to release the brake
-              self.resume_timer_frame = self.frame # reset the resume timer so its active
-            else: # otherwise we're holding
-              hold = (self.frame - self.hold_timer_frame) < 600 # hold for 6s. This allows the electric brake to hold the car.
+                (CC.actuators.longControlState == LongCtrlState.starting) or CS.acc["RESUME"]):
+              self.resume_timer_frame = self.frame
+            else:
+              hold = (self.frame - self.hold_timer_frame) < 600
 
-        else: # if we're moving
-          self.hold_timer_frame = self.frame # reset the hold timer so its active when we stop
-          self.hold_delay_frame = self.frame # reset the hold delay
+        else:
+          self.hold_timer_frame = self.frame
+          self.hold_delay_frame = self.frame
 
-        resume = (self.frame - self.resume_timer_frame) < 50 # stay on for 0.5s to release the brake. This allows the car to move.
+        resume = (self.frame - self.resume_timer_frame) < 50
         can_sends.append(mazdacan.create_acc_cmd(self.packer, CS.acc, hold, resume))
 
 
