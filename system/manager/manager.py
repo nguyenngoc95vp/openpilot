@@ -567,7 +567,7 @@ def migrate_starpilot_default_parity(params: Params, params_cache: Params) -> No
   desired_bool_values = {
     "AdvancedLateralTune": True,
     "ForceAutoTuneOff": True,
-    "NNFF": False,
+    "NNFF": ,
     "NNFFLite": False,
   }
 
