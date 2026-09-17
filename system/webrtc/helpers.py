@@ -14,6 +14,10 @@ class StreamRequestBody:
   bridge_services_in: list[str] = field(default_factory=list)
   bridge_services_out: list[str] = field(default_factory=list)
 
+  @property
+  def cameras(self) -> list[str]:
+    return [self.init_camera]
+
 
 def post_stream_request(body: StreamRequestBody) -> dict:
   t_start = time.monotonic()
