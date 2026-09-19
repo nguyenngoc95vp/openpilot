@@ -95,10 +95,12 @@ class CarController(CarControllerBase):
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                       CS.out.steeringTorque, self.ccp)
       if self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
-        if CS.ti_lkas_allowed:
-          ti_new_torque = int(round(CC.actuators.torque * self.ccp.STEER_MAX))
-          ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.apply_torque_last,
-                                                    CS.out.steeringTorque, self.ccp)
+        # Keep the TI steering request/heartbeat active at standstill as well.
+        # TI handles its own safety/error state; do not stop sending the request
+        # merely because its feedback state temporarily leaves RUN at a stop.
+        ti_new_torque = int(round(CC.actuators.torque * self.ccp.STEER_MAX))
+        ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.apply_torque_last,
+                                                  CS.out.steeringTorque, self.ccp)
 
     if self.driver_takeover:
       apply_torque = 0
