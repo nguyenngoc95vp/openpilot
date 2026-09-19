@@ -12,6 +12,7 @@ LaneChangeDirection = log.LaneChangeDirection
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
+LOW_SPEED_BLINKER_TURN_THRESHOLD = 2.4
 NAV_TURN_DISTANCE_SPEED_BREAKPOINTS = [0.0, 5.0, 10.0]
 NAV_TURN_DISTANCE_BREAKPOINTS = [20.0, 25.0, 30.0]
 NAV_KEEP_DISTANCE_SPEED_BREAKPOINTS = [0.0, 15.0, 30.0]
@@ -58,6 +59,10 @@ class DesireHelper:
     self.lane_change_ll_prob = 1.0
     self.keep_pulse_timer = 0.0
     self.prev_one_blinker = False
+    self.blinker_hold_s = 0.0
+    self.low_speed_lc_armed = False
+    self.low_speed_auto_lc_pending = False
+    self.low_speed_lc_direction = LaneChangeDirection.none
     self.desire = log.Desire.none
 
     self.turn_stop_hold = False
@@ -245,6 +250,29 @@ class DesireHelper:
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < starpilot_toggles.minimum_lane_change_speed
 
+    # Below the configured lane-change speed, distinguish a Mazda-style
+    # momentary 3-flash from a held stalk by the continuous blinker duration.
+    # A short cycle is remembered and converted into an automatic lane change
+    # when the blinker turns off; a held blinker becomes a turn desire at 2.4s.
+    if one_blinker:
+      self.blinker_hold_s += DT_MDL
+    else:
+      if (self.low_speed_lc_armed and
+          self.blinker_hold_s < LOW_SPEED_BLINKER_TURN_THRESHOLD):
+        self.low_speed_auto_lc_pending = True
+        self.low_speed_lc_direction = self.get_lane_change_direction(carstate)
+      self.blinker_hold_s = 0.0
+      self.low_speed_lc_armed = False
+
+    if one_blinker and not self.prev_one_blinker and below_lane_change_speed:
+      self.low_speed_lc_armed = True
+
+    want_turn = (
+      below_lane_change_speed
+      and one_blinker
+      and self.blinker_hold_s >= LOW_SPEED_BLINKER_TURN_THRESHOLD
+    )
+
     stop_imminent = (bool(getattr(starpilotPlan, "redLight", False))
                      or bool(getattr(starpilotPlan, "forcingStop", False))
                      or bool(getattr(starpilotPlan, "stopSignConfirmed", False)))
@@ -265,11 +293,23 @@ class DesireHelper:
       self.lane_change_direction = LaneChangeDirection.none
     else:
       # LaneChangeState.off
-      if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
-        self.lane_change_state = LaneChangeState.preLaneChange
-        self.lane_change_ll_prob = 1.0
-        # Initialize lane change direction to prevent UI alert flicker
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+      if self.lane_change_state == LaneChangeState.off:
+        if one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
+          self.lane_change_state = LaneChangeState.preLaneChange
+          self.lane_change_ll_prob = 1.0
+          # Initialize lane change direction to prevent UI alert flicker
+          self.lane_change_direction = self.get_lane_change_direction(carstate)
+        elif self.low_speed_auto_lc_pending and below_lane_change_speed:
+          # The blinker completed its short 3-flash cycle. Start the lane
+          # change automatically; no steering nudge/torque is required.
+          self.lane_change_direction = self.low_speed_lc_direction
+          self.low_speed_auto_lc_pending = False
+          if not ((self.lane_change_direction == LaneChangeDirection.left and carstate.leftBlindspot) or
+                  (self.lane_change_direction == LaneChangeDirection.right and carstate.rightBlindspot)):
+            self.lane_change_state = LaneChangeState.laneChangeStarting
+            self.lane_change_ll_prob = 1.0
+            self.lane_change_completed = starpilot_toggles.one_lane_change
+            self.lane_change_wait_timer = 0.0
 
       # LaneChangeState.preLaneChange
       elif self.lane_change_state == LaneChangeState.preLaneChange:
@@ -292,9 +332,14 @@ class DesireHelper:
           desired_lane_width = starpilotPlan.laneWidthLeft if self.lane_change_direction == LaneChangeDirection.left else starpilotPlan.laneWidthRight
           torque_applied &= desired_lane_width >= starpilot_toggles.lane_detection_width
 
-        if not one_blinker or below_lane_change_speed or self.lane_change_completed:
+        if not one_blinker or self.lane_change_completed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
+        elif below_lane_change_speed:
+          # Low-speed lane changes are triggered by the completed 3-flash
+          # cycle, not by steering torque/nudge. Do not start from the
+          # temporary preLaneChange state while the blinker is still on.
+          pass
         elif torque_applied and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
 
@@ -332,7 +377,7 @@ class DesireHelper:
 
     self.prev_one_blinker = one_blinker
 
-    if lateral_active and one_blinker and below_lane_change_speed and not carstate.standstill \
+    if lateral_active and want_turn and not carstate.standstill \
         and starpilot_toggles.use_turn_desires and not self.turn_stop_hold:
       self.turn_direction = TurnDirection.turnLeft if carstate.leftBlinker else TurnDirection.turnRight
       self.desire = TURN_DESIRES[self.turn_direction]
@@ -354,6 +399,8 @@ class DesireHelper:
       self.lane_change_completed = False
 
       self.lane_change_wait_timer = 0.0
+    elif want_turn:
+      self.low_speed_auto_lc_pending = False
 
     nav_desire = self._navigation_desire(carstate, lateral_active, starpilotPlan, starpilot_toggles)
     if nav_desire != log.Desire.none and self.lane_change_state == LaneChangeState.off:
