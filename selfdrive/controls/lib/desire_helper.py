@@ -300,11 +300,25 @@ class DesireHelper:
           self.lane_change_ll_prob = 1.0
           # Initialize lane change direction to prevent UI alert flicker
           self.lane_change_direction = self.get_lane_change_direction(carstate)
+        elif self.low_speed_auto_lc_pending and below_lane_change_speed:
+          # The blinker completed its short 3-flash cycle while still in the
+          # OFF state. Start the lane change automatically.
+          self.lane_change_direction = self.low_speed_lc_direction
+          self.low_speed_auto_lc_pending = False
+          blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
+                                (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+          if not blindspot_detected:
+            self.lane_change_state = LaneChangeState.laneChangeStarting
+            self.lane_change_ll_prob = 1.0
+            self.lane_change_completed = starpilot_toggles.one_lane_change
+            self.lane_change_wait_timer = 0.0
 
       # LaneChangeState.preLaneChange
       elif self.lane_change_state == LaneChangeState.preLaneChange:
-        # Update lane change direction
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+        # Update lane change direction only while the blinker is still on.
+        # Once the 3-flash cycle turns off, keep the remembered direction.
+        if one_blinker:
+          self.lane_change_direction = self.get_lane_change_direction(carstate)
 
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
