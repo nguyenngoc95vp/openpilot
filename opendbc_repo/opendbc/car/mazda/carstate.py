@@ -164,9 +164,18 @@ class CarState(CarStateBase):
           self.low_speed_alert = False
       ret.lowSpeedAlert = self.low_speed_alert
 
-    # A genuine TI fault still raises steerFaultTemporary. A DRIVER_OVER state caused
-    # by driver torque is an expected handover and is intentionally not treated as a fault.
-    ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked and not self.ti_lkas_allowed and not self.ti_driver_over
+    # Keep TI active at a standstill: the TI controller continues receiving its
+    # steering request/heartbeat, while Mazda's expected LKAS_BLOCK at 0 kph is
+    # not promoted to a temporary steering fault.
+    if ret.standstill and self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
+      ret.steerFaultTemporary = False
+    else:
+      ret.steerFaultTemporary = (
+        self.lkas_allowed_speed
+        and lkas_blocked
+        and not self.ti_lkas_allowed
+        and not self.ti_driver_over
+      )
 
     self.acc_active_last = ret.cruiseState.enabled
 
