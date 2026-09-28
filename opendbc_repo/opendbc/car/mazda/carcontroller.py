@@ -145,7 +145,7 @@ class CarController(CarControllerBase):
           can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME))
 
       # send HUD alerts
-      if self.frame % 50 == 0:
+      if self.frame % 50 == 0 and CS.cam_laneinfo:
         ldw = CC.hudControl.visualAlert == VisualAlert.ldw
         steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
         # TODO: find a way to silence audible warnings so we can add more hud alerts
