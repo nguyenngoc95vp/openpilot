@@ -22,6 +22,7 @@ class CarState(CarStateBase):
     self.acc_active_last = False
     self.lkas_allowed_speed = False
     self.cam_lkas = 0
+    self.cam_laneinfo = None
     self.params = CarControllerParams(CP)
 
     self.distance_button = 0
