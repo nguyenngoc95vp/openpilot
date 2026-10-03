@@ -90,7 +90,7 @@ class CAR(Platforms):
   )
   MAZDA_CX8 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-8 2018-23")],
-    MazdaCarSpecs(mass=1850, wheelbase=2.930, steerRatio=17.6, centerToFrontRatio=0.41),
+    MazdaCarSpecs(mass=1850, wheelbase=2.930, steerRatio=15.5, centerToFrontRatio=0.41),
     flags=MazdaSafetyFlags.GEN1,
   )
   MAZDA_CX9 = MazdaPlatformConfig(
