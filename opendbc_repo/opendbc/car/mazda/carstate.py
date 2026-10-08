@@ -166,7 +166,15 @@ class CarState(CarStateBase):
 
     # A genuine TI fault still raises steerFaultTemporary. A DRIVER_OVER state caused
     # by driver torque is an expected handover and is intentionally not treated as a fault.
-    ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked and not self.ti_lkas_allowed and not self.ti_driver_over
+    if ret.standstill and self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
+      ret.steerFaultTemporary = False
+    else:
+      ret.steerFaultTemporary = (
+        self.lkas_allowed_speed
+        and lkas_blocked
+        and not self.ti_lkas_allowed
+        and not self.ti_driver_over
+      )
 
     self.acc_active_last = ret.cruiseState.enabled
 
