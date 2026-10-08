@@ -64,6 +64,14 @@ class CarInterface(CarInterfaceBase):
     ret.steerLimitTimer = 0.8
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
 
+    # CX-8 steering baseline for StarCX8: manual actuator delay, steer ratio,
+    # friction, and lateral acceleration values tuned for the CX-8.
+    if candidate == CAR.MAZDA_CX8:
+      ret.steerActuatorDelay = 0.1
+      ret.steerRatio = 17.6
+      ret.lateralTuning.torque.friction = 0.18
+      ret.lateralTuning.torque.latAccelFactor = 1.76
+
     if candidate not in (CAR.MAZDA_CX5_2022, CAR.MAZDA_3_2019, CAR.MAZDA_CX_30, CAR.MAZDA_CX_50, CAR.MAZDA_3_2023, CAR.MAZDA_CX_30_2023):
       ret.minSteerSpeed = LKAS_LIMITS.DISABLE_SPEED * CV.KPH_TO_MS
     ret.enableBsm = True
