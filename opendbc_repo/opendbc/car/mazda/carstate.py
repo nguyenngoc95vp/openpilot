@@ -183,7 +183,10 @@ class CarState(CarStateBase):
 
     # camera signals
     if not self.CP.flags & MazdaSafetyFlags.NO_FSC:
-      ret.invalidLkasSetting = cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+            ret.invalidLkasSetting = (
+        cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+        and not (self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR and ret.standstill)
+      )
       self.lkas_disabled = cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0 if not self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR else False
       self.cam_lkas = cp_cam.vl["CAM_LKAS"]
       self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
