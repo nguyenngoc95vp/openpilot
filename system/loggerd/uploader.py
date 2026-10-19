@@ -108,14 +108,15 @@ class Uploader:
       if any(name.endswith(".lock") for name in names):
         continue
 
-      try:
-        segment_size = sum(os.path.getsize(os.path.join(path, name)) for name in names
-                           if os.path.isfile(os.path.join(path, name)))
-      except OSError:
-        continue
+      if logdir not in ("crash", "boot"):
+        try:
+          segment_size = sum(os.path.getsize(os.path.join(path, name)) for name in names
+                             if os.path.isfile(os.path.join(path, name)))
+        except OSError:
+          continue
 
-      if segment_size < MIN_UPLOAD_SEGMENT_SIZE:
-        continue
+        if segment_size < MIN_UPLOAD_SEGMENT_SIZE:
+          continue
 
       for name in sorted(names, key=lambda n: self.immediate_priority.get(n, 1000)):
         key = os.path.join(logdir, name)
