@@ -29,6 +29,10 @@ MAX_UPLOAD_SIZES = {
   "qcam": 5*1e6,
 }
 
+# Segments smaller than this are treated as incomplete/very short and not uploaded.
+# Don't mark them uploaded here: a live segment may grow past the threshold on a later pass.
+MIN_UPLOAD_SEGMENT_SIZE = 20 * 1024 * 1024
+
 allow_sleep = bool(int(os.getenv("UPLOADER_SLEEP", "1")))
 force_wifi = os.getenv("FORCEWIFI") is not None
 fake_upload = os.getenv("FAKEUPLOAD") is not None
@@ -102,6 +106,15 @@ class Uploader:
         continue
 
       if any(name.endswith(".lock") for name in names):
+        continue
+
+      try:
+        segment_size = sum(os.path.getsize(os.path.join(path, name)) for name in names
+                           if os.path.isfile(os.path.join(path, name)))
+      except OSError:
+        continue
+
+      if segment_size < MIN_UPLOAD_SEGMENT_SIZE:
         continue
 
       for name in sorted(names, key=lambda n: self.immediate_priority.get(n, 1000)):
