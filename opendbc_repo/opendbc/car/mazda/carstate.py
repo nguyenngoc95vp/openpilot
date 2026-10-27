@@ -188,8 +188,11 @@ class CarState(CarStateBase):
     # Check if LKAS is disabled due to lack of driver torque when all other states indicate
     # it should be enabled (steer lockout). Don't warn until we actually get lkas active
     # and lose it again, i.e, after initial lkas activation
-    ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked and not self.ti_lkas_allowed
-
+        # Standstill: Mazda sets LKAS_BLOCK at 0 kph — do not treat as steering fault for TI
+    if ret.standstill and self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
+      ret.steerFaultTemporary = False
+    else:
+      ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked and not self.ti_lkas_allowed
     self.acc_active_last = ret.cruiseState.enabled
 
     self.crz_btns_counter = cp.vl["CRZ_BTNS"]["CTR"]
