@@ -262,6 +262,11 @@ class CarController(CarControllerBase):
         ti_apply_torque = max(-ti_cap, min(ti_cap, ti_apply_torque))
         apply_torque = max(-ti_cap, min(ti_cap, apply_torque))
 
+    # Keep TI in RUN at standstill: still send request with torque=0
+    if self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
+      if CS.out.standstill or (CS.out.brakePressed and CS.out.vEgo < 1.0):
+        ti_apply_torque = 0
+
     self.apply_torque_last = apply_torque
     self.ti_apply_torque_last = ti_apply_torque
 
