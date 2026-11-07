@@ -6,7 +6,7 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.gm import gmcan
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.gm.values import (
-  ASCM_INT, CAMERA_ACC_CAR, CAR, CC_ONLY_CAR, CC_REGEN_PADDLE_CAR, DBC, EV_CAR, SDGM_CAR, AccState, CanBus, CarControllerParams,
+  ASCM_INT, CAMERA_ACC_CAR, CAR, CC_ONLY_CAR, CC_REGEN_PADDLE_CAR, DBC, EV_CAR, GM_AUTO_HOLD_CARS, SDGM_CAR, AccState, CanBus, CarControllerParams,
   CruiseButtons, GMFlags, GMSafetyFlags,
 )
 from opendbc.car.interfaces import CarControllerBase
@@ -172,7 +172,7 @@ def should_send_cc_button_spam(CP, CC, CS):
   return (
     bool(CP.flags & GMFlags.CC_LONG.value) and
     CC.longActive and
-    CS.out.vEgo > CP.minEnableSpeed
+    CS.out.vEgo >= CP.minEnableSpeed
   )
 
 
@@ -256,6 +256,17 @@ def shape_truck_pitch_accel(pitch_accel: float, v_ego: float, enabled: bool) -> 
   return pitch_accel * scale
 
 
+MAX_UPHILL_GRADE_FF = 0.20
+
+
+def limit_grade_feedforward(planner_accel: float, pitch_accel: float) -> float:
+  if pitch_accel > 0.0 and planner_accel > 0.0:
+    return 0.0
+  if pitch_accel > MAX_UPHILL_GRADE_FF:
+    return MAX_UPHILL_GRADE_FF
+  return pitch_accel
+
+
 def shape_truck_friction_brake(apply_brake: int, accel_cmd: float, stopping: bool, active: bool) -> tuple[int, bool]:
   if apply_brake <= 0:
     return 0, False
@@ -298,7 +309,7 @@ def supports_volt_auto_hold(CP, auto_hold_enabled: bool):
     auto_hold_enabled and
     getattr(CP, "openpilotLongitudinalControl", False) and
     stock_hold_safety_ready and
-    CP.carFingerprint in AUTO_HOLD_VOLT_CARS
+    CP.carFingerprint in GM_AUTO_HOLD_CARS
   )
 
 
@@ -401,6 +412,18 @@ def supports_bolt_acc_pedal_friction_experiment(CP) -> bool:
     CP.openpilotLongitudinalControl and
     CP.enableGasInterceptorDEPRECATED and
     bool(CP.flags & GMFlags.PEDAL_LONG.value)
+  )
+
+
+def update_bolt_acc_pedal_stop_hold(CP, CC, CS, holding: bool) -> bool:
+  return (
+    supports_bolt_acc_pedal_friction_experiment(CP) and
+    CC.longActive and
+    CC.actuators.longControlState == LongCtrlState.stopping and
+    not CC.cruiseControl.resume and
+    not CS.out.gasPressed and
+    not CS.out.brakePressed and
+    (holding or CS.out.standstill)
   )
 
 
@@ -572,6 +595,7 @@ class CarController(CarControllerBase):
       self.gm_auto_hold_enabled = False
     self.bolt_acc_pedal_friction_release_frames = 0
     self.bolt_acc_pedal_friction_low_speed_active = False
+    self.bolt_acc_pedal_stop_hold = False
     self.truck_friction_brake_active = False
     self.truck_follow_accel = 0.0
 
@@ -761,6 +785,7 @@ class CarController(CarControllerBase):
     actuators = CC.actuators
     self.aego = CS.out.aEgo
     accel = actuators.accel
+    self.bolt_acc_pedal_stop_hold = update_bolt_acc_pedal_stop_hold(self.CP, CC, CS, self.bolt_acc_pedal_stop_hold)
     press_regen_paddle = False
     auto_hold_enabled = supports_volt_auto_hold(self.CP, self.gm_auto_hold_enabled)
     volt_one_pedal_supported = supports_volt_one_pedal(
@@ -1003,14 +1028,13 @@ class CarController(CarControllerBase):
           self.truck_follow_accel = 0.0
         else:
           long_pitch_enabled = bool(getattr(starpilot_toggles, "long_pitch", True))
-          pedal_long_path = bool(self.CP.enableGasInterceptorDEPRECATED and (self.CP.flags & GMFlags.PEDAL_LONG.value))
-          long_pitch_for_powertrain = long_pitch_enabled or pedal_long_path
 
           if self.is_volt:
-            if long_pitch_for_powertrain and len(CC.orientationNED) == 3 and CS.out.vEgo > self.CP.vEgoStopping:
+            if long_pitch_enabled and len(CC.orientationNED) == 3 and CS.out.vEgo > self.CP.vEgoStopping:
               volt_pitch_accel = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
             else:
               volt_pitch_accel = 0.0
+            volt_pitch_accel = limit_grade_feedforward(accel, volt_pitch_accel)
 
             aero_drag_accel = (0.5 * self.coeffDrag * self.frontalArea * self.airDensity * CS.out.vEgo ** 2) / self.mass
             accel_cmd = float(np.clip(accel + aero_drag_accel + volt_pitch_accel, self.params.ACCEL_MIN, self.params.ACCEL_MAX))
@@ -1031,7 +1055,7 @@ class CarController(CarControllerBase):
             if self.apply_brake > 0:
               self.apply_gas = self.params.INACTIVE_REGEN
           else:
-            if long_pitch_for_powertrain and len(CC.orientationNED) == 3 and CS.out.vEgo > self.CP.vEgoStopping:
+            if long_pitch_enabled and len(CC.orientationNED) == 3 and CS.out.vEgo > self.CP.vEgoStopping:
               accel_due_to_pitch = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
             else:
               accel_due_to_pitch = 0.0
@@ -1048,6 +1072,7 @@ class CarController(CarControllerBase):
               not self.CP.enableGasInterceptorDEPRECATED
             )
             accel_due_to_pitch = shape_truck_pitch_accel(accel_due_to_pitch, CS.out.vEgo, truck_long_smoothing)
+            accel_due_to_pitch = limit_grade_feedforward(actuators.accel, accel_due_to_pitch)
             accel_input = actuators.accel + accel_due_to_pitch
             if truck_long_smoothing:
               accel_input = shape_truck_positive_accel(
@@ -1148,7 +1173,13 @@ class CarController(CarControllerBase):
           if should_send_cc_button_spam(self.CP, CC, CS):
             if self.CP.carFingerprint != CAR.CADILLAC_XT4_CC:
               # Using extend instead of append since the message is only sent intermittently
-              can_sends.extend(gmcan.create_gm_cc_spam_command(self.packer_pt, self, CS, actuators, starpilot_toggles))
+              longitudinal_adjustment_active = bool(getattr(
+                CS, "openpilot_longitudinal_adjustment_active", CC.hudControl.leadVisible,
+              ))
+              can_sends.extend(gmcan.create_gm_cc_spam_command(
+                self.packer_pt, self, CS, actuators, starpilot_toggles,
+                longitudinal_adjustment_active=longitudinal_adjustment_active,
+              ))
           else:
             if (CS.out.cruiseState.enabled and CC.enabled and self.frame % 52 == 0 and
                 CS.cruise_buttons == CruiseButtons.UNPRESS and CS.out.gasPressed and CS.out.cruiseState.speed < CS.out.vEgo < hud_v_cruise):
@@ -1160,6 +1191,9 @@ class CarController(CarControllerBase):
               else:
                 can_sends.append(gmcan.create_buttons(self.packer_pt, CanBus.POWERTRAIN, (CS.buttons_counter + 1) % 4, CruiseButtons.DECEL_SET))
         if self.CP.enableGasInterceptorDEPRECATED:
+          if self.bolt_acc_pedal_stop_hold:
+            interceptor_gas_cmd = 0.0
+            self.pedal_steady = 0.0
           can_sends.append(create_gas_interceptor_command(self.packer_pt, interceptor_gas_cmd, idx))
         if bolt_acc_pedal_friction_experiment:
           friction_brake_bus = get_friction_brake_bus(self.CP)
@@ -1180,7 +1214,7 @@ class CarController(CarControllerBase):
           # cannot linger after a disengage or main-off event.
           if should_send_bolt_acc_pedal_friction:
             can_sends.append(gmcan.create_friction_brake_command(
-              self.packer_ch, friction_brake_bus, experiment_brake, idx, bolt_acc_pedal_friction_main_on,
+              self.packer_ch, friction_brake_bus, experiment_brake, idx, bolt_acc_pedal_friction_main_on and CC.longActive,
               near_stop, at_full_stop, self.CP))
         if self.CP.carFingerprint not in CC_ONLY_CAR:
           friction_brake_bus = get_friction_brake_bus(self.CP)

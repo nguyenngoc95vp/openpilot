@@ -25,10 +25,6 @@ DESCRIPTIONS = {
     "Enable this to switch to openpilot longitudinal control. Enabling Experimental mode is recommended when enabling openpilot longitudinal control alpha. " +
     "Changing this setting will restart openpilot if the car is powered on."
   ),
-  'use_prebuilt': tr_noop(
-    "When enabled (default), openpilot uses prebuilt binaries at startup and skips source compilation. " +
-    "Disable this if you intend to edit code and compile directly on-device."
-  ),
 }
 
 
@@ -36,7 +32,11 @@ class DeveloperLayout(Widget):
   def __init__(self):
     super().__init__()
     self._params = Params()
+<<<<<<< HEAD
     self._is_release = self._params.get_bool("IsReleaseBranch")
+=======
+    self._params.put_bool("LongitudinalManeuverMode", False)
+>>>>>>> upstream/StarPilot
 
     # Build items and keep references for callbacks/state updates
     self._adb_toggle = toggle_item(
@@ -44,14 +44,6 @@ class DeveloperLayout(Widget):
       description=lambda: tr(DESCRIPTIONS["enable_adb"]),
       initial_state=self._params.get_bool("AdbEnabled"),
       callback=self._on_enable_adb,
-      enabled=ui_state.is_offroad,
-    )
-
-    self._use_prebuilt_toggle = toggle_item(
-      lambda: tr("Use Prebuilt Binaries"),
-      description=lambda: tr(DESCRIPTIONS["use_prebuilt"]),
-      initial_state=self._params.get_bool("UsePrebuilt"),
-      callback=self._on_use_prebuilt,
       enabled=ui_state.is_offroad,
     )
 
@@ -72,6 +64,7 @@ class DeveloperLayout(Widget):
       enabled=ui_state.is_offroad,
     )
 
+<<<<<<< HEAD
     self._long_maneuver_toggle = toggle_item(
       lambda: tr("Longitudinal Maneuver Mode"),
       description="",
@@ -86,6 +79,8 @@ class DeveloperLayout(Widget):
       callback=self._on_lat_maneuver_mode,
     )
 
+=======
+>>>>>>> upstream/StarPilot
     self._alpha_long_toggle = toggle_item(
       lambda: tr("openpilot Longitudinal Control (Alpha)"),
       description=lambda: tr(DESCRIPTIONS["alpha_longitudinal"]),
@@ -104,12 +99,14 @@ class DeveloperLayout(Widget):
 
     self._scroller = Scroller([
       self._adb_toggle,
-      self._use_prebuilt_toggle,
       self._ssh_toggle,
       self._ssh_keys,
       self._joystick_toggle,
+<<<<<<< HEAD
       self._long_maneuver_toggle,
       self._lat_maneuver_toggle,
+=======
+>>>>>>> upstream/StarPilot
       self._alpha_long_toggle,
       self._ui_debug_toggle,
     ], line_separator=True, spacing=0)
@@ -142,23 +139,29 @@ class DeveloperLayout(Widget):
       else:
         self._alpha_long_toggle.set_visible(True)
 
+<<<<<<< HEAD
       long_man_enabled = ui_state.has_longitudinal_control and ui_state.is_offroad()
       self._long_maneuver_toggle.action_item.set_enabled(long_man_enabled)
       self._lat_maneuver_toggle.action_item.set_enabled(ui_state.is_offroad())
     else:
       self._long_maneuver_toggle.action_item.set_enabled(False)
       self._lat_maneuver_toggle.action_item.set_enabled(False)
+=======
+    else:
+>>>>>>> upstream/StarPilot
       self._alpha_long_toggle.set_visible(False)
 
     # TODO: make a param control list item so we don't need to manage internal state as much here
     # refresh toggles from params to mirror external changes
     for key, item in (
       ("AdbEnabled", self._adb_toggle),
-      ("UsePrebuilt", self._use_prebuilt_toggle),
       ("SshEnabled", self._ssh_toggle),
       ("JoystickDebugMode", self._joystick_toggle),
+<<<<<<< HEAD
       ("LongitudinalManeuverMode", self._long_maneuver_toggle),
       ("LateralManeuverMode", self._lat_maneuver_toggle),
+=======
+>>>>>>> upstream/StarPilot
       ("AlphaLongitudinalEnabled", self._alpha_long_toggle),
       ("ShowDebugInfo", self._ui_debug_toggle),
     ):
@@ -175,12 +178,10 @@ class DeveloperLayout(Widget):
   def _on_enable_ssh(self, state: bool):
     self._params.put_bool("SshEnabled", state)
 
-  def _on_use_prebuilt(self, state: bool):
-    self._params.put_bool("UsePrebuilt", state)
-
   def _on_joystick_debug_mode(self, state: bool):
     self._params.put_bool("JoystickDebugMode", state)
     self._params.put_bool("LongitudinalManeuverMode", False)
+<<<<<<< HEAD
     self._long_maneuver_toggle.action_item.set_state(False)
     self._params.put_bool("LateralManeuverMode", False)
     self._lat_maneuver_toggle.action_item.set_state(False)
@@ -199,6 +200,8 @@ class DeveloperLayout(Widget):
     self._joystick_toggle.action_item.set_state(False)
     self._params.put_bool("LongitudinalManeuverMode", False)
     self._long_maneuver_toggle.action_item.set_state(False)
+=======
+>>>>>>> upstream/StarPilot
 
   def _on_alpha_long_enabled(self, state: bool):
     if state:

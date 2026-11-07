@@ -3,6 +3,10 @@ from opendbc.car.subaru.values import CanBus
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 
+CRUISE_BUTTON_MAIN = 1
+CRUISE_BUTTON_SET = 2
+CRUISE_BUTTON_RESUME = 3
+
 
 def create_steering_control(packer, apply_torque, steer_req):
   values = {
@@ -65,6 +69,19 @@ def create_es_distance(packer, frame, es_distance_msg, bus, pcm_cancel_cmd, long
     values["Cruise_Throttle"] = 1818 # inactive throttle
 
   return packer.make_can_msg("ES_Distance", bus, values)
+
+
+def create_cruise_buttons(packer, frame, cruise_buttons_msg, button, bus=CanBus.main):
+  values = {s: cruise_buttons_msg[s] for s in [
+    "CHECKSUM",
+    "Signal1",
+    "Signal2",
+  ]}
+  values["COUNTER"] = frame % 0x10
+  values["Main"] = button == CRUISE_BUTTON_MAIN
+  values["Set"] = button == CRUISE_BUTTON_SET
+  values["Resume"] = button == CRUISE_BUTTON_RESUME
+  return packer.make_can_msg("Cruise_Buttons", bus, values)
 
 
 def create_es_lkas_state(packer, frame, es_lkas_state_msg, enabled, visual_alert, left_line, right_line, left_lane_depart, right_lane_depart,
@@ -182,6 +199,32 @@ def create_es_dashstatus(packer, frame, dashstatus_msg, enabled, long_enabled, l
   return packer.make_can_msg("ES_DashStatus", bus, values)
 
 
+def create_stop_start_control(packer, dashlights_msg, raw_dat=None, counter=None, bus=CanBus.alt):
+  """Create the supported Subaru momentary Stop/Start button request.
+
+  Dashlights is a stock periodic message, so preserve the live frame and only
+  change the counter, event bit, and checksum. The raw frame is needed because
+  the DBC does not describe every byte in this message.
+  """
+  if raw_dat:
+    dat = bytearray(raw_dat)
+    if len(dat) != 8:
+      raise ValueError(f"Dashlights frame must be 8 bytes, got {len(dat)}")
+    if counter is None:
+      counter = (int(dashlights_msg.get("COUNTER", 0)) + 1) % 0x10
+    dat[1] = (dat[1] & 0xF0) | (counter % 0x10)
+    dat[6] |= 0x40  # STOP_START, big-endian bit 54
+    dat[0] = ((0x390 & 0xFF) + ((0x390 >> 8) & 0xFF) + sum(dat[1:])) & 0xFF
+    return 0x390, bytes(dat), bus
+
+  values = dict(dashlights_msg)
+  if counter is None:
+    counter = (int(values.get("COUNTER", 0)) + 1) % 0x10
+  values["COUNTER"] = counter % 0x10
+  values["STOP_START"] = 1
+  return packer.make_can_msg("Dashlights", bus, values)
+
+
 def create_es_brake(packer, frame, es_brake_msg, long_enabled, long_active, brake_value, bus=CanBus.main):
   values = {s: es_brake_msg[s] for s in [
     "CHECKSUM",
@@ -256,6 +299,18 @@ def create_es_infotainment(packer, frame, es_infotainment_msg, visual_alert, bus
     values["LKAS_State_Infotainment"] = 2
 
   return packer.make_can_msg("ES_Infotainment", bus, values)
+
+
+def create_ascent_lkas_alert(raw_dat: bytes, lateral_active: bool, visual_alert):
+  address = 0x3C4
+  if len(raw_dat) != 8 or raw_dat[0] != (((address & 0xff) + (address >> 8) + sum(raw_dat[1:])) & 0xff):
+    return None
+
+  dat = bytearray(raw_dat)
+  if lateral_active and visual_alert != VisualAlert.steerRequired and dat[2:] == b"\x00\x01\x04\x00\x00\x00":
+    dat[3:5] = b"\x00\x00"
+    dat[0] = ((address & 0xff) + (address >> 8) + sum(dat[1:])) & 0xff
+  return address, bytes(dat), CanBus.main
 
 
 def create_es_highbeamassist(packer):

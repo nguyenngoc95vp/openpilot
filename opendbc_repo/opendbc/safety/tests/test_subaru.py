@@ -32,10 +32,12 @@ class SubaruMsg(enum.IntEnum):
   ES_DashStatus     = 0x321
   ES_LKAS_State     = 0x322
   ES_Infotainment   = 0x323
+  ES_LKAS_Alert     = 0x3C4
   ES_UDS_Request    = 0x787
   ES_HighBeamAssist = 0x121
   ES_STATIC_1       = 0x22a
   ES_STATIC_2       = 0x325
+  Dashlights        = 0x390
 
 
 SUBARU_MAIN_BUS = 0
@@ -369,6 +371,47 @@ class TestSubaruGen2FixedAngleSafety(TestSubaruGen2AngleStockLongitudinalSafety)
     raise unittest.SkipTest("Breakpoint angle limits do not enforce a real-time message frequency")
 
 
+class TestSubaruGen2FixedAngleStopStartSafety(TestSubaruGen2FixedAngleSafety):
+  FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE | SubaruSafetyFlags.FIXED_ANGLE_LIMITS | \
+    SubaruSafetyFlags.STOP_START_BUTTON
+  TX_MSGS = TestSubaruGen2FixedAngleSafety.TX_MSGS + [[SubaruMsg.Dashlights, SUBARU_ALT_BUS]]
+
+  def _stop_start_msg(self, pressed):
+    return self.packer.make_can_msg_safety(
+      "Dashlights", SUBARU_ALT_BUS, {"COUNTER": 0, "STOP_START": pressed},
+    )
+
+  def test_stop_start_tx_requires_pressed_bit(self):
+    self.assertTrue(self._tx(self._stop_start_msg(True)))
+    self.assertFalse(self._tx(self._stop_start_msg(False)))
+
+
+class TestSubaruGen2AscentLkasAlertSafety(TestSubaruGen2FixedAngleSafety):
+  FLAGS = TestSubaruGen2FixedAngleSafety.FLAGS | SubaruSafetyFlags.ASCENT_LKAS_ALERT
+  TX_MSGS = TestSubaruGen2FixedAngleSafety.TX_MSGS + [[SubaruMsg.ES_LKAS_Alert, SUBARU_MAIN_BUS]]
+  RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (*TestSubaruAngleSafetyBase.RELAY_MALFUNCTION_ADDRS[SUBARU_MAIN_BUS],
+                                            SubaruMsg.ES_LKAS_Alert)}
+  FWD_BLACKLISTED_ADDRS = {SUBARU_CAM_BUS: (*TestSubaruAngleSafetyBase.FWD_BLACKLISTED_ADDRS[SUBARU_CAM_BUS],
+                                         SubaruMsg.ES_LKAS_Alert)}
+
+  def test_secondary_alert_tx_requires_checksum(self):
+    from opendbc.safety.tests.libsafety.libsafety_py import make_CANPacket
+    self.assertTrue(self._tx(make_CANPacket(SubaruMsg.ES_LKAS_Alert, SUBARU_MAIN_BUS, bytes.fromhex("ce02000104000000"))))
+    self.assertFalse(self._tx(make_CANPacket(SubaruMsg.ES_LKAS_Alert, SUBARU_MAIN_BUS, bytes.fromhex("0002000104000000"))))
+
+  def test_secondary_alert_permission_and_forwarding_are_flag_gated(self):
+    from opendbc.safety.tests.libsafety.libsafety_py import make_CANPacket
+    msg = make_CANPacket(SubaruMsg.ES_LKAS_Alert, SUBARU_MAIN_BUS, bytes.fromhex("ce02000104000000"))
+    for flags in (0, SubaruSafetyFlags.GEN2, SubaruSafetyFlags.LKAS_ANGLE, TestSubaruGen2FixedAngleSafety.FLAGS,
+                  TestSubaruDPlatformAngleSafety.FLAGS, TestSubaruDPlatformCameraAngleSafety.FLAGS,
+                  SubaruSafetyFlags.ASCENT_LKAS_ALERT):
+      with self.subTest(flags=flags):
+        self.safety.set_safety_hooks(CarParams.SafetyModel.subaru, flags)
+        self.safety.init_tests()
+        self.assertFalse(self._tx(msg))
+        self.assertEqual(self.safety.safety_fwd_hook(SUBARU_CAM_BUS, SubaruMsg.ES_LKAS_Alert), SUBARU_MAIN_BUS)
+
+
 class TestSubaruDPlatformAngleSafety(TestSubaruStockLongitudinalSafetyBase, TestSubaruAngleSafetyBase):
   FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE | SubaruSafetyFlags.D_PLATFORM
   ALT_MAIN_BUS = SUBARU_ALT_BUS
@@ -399,6 +442,33 @@ class TestSubaruDPlatformAngleSafety(TestSubaruStockLongitudinalSafetyBase, Test
 
   def _angle_meas_msg(self, angle):
     return self.packer.make_can_msg_safety("Steering_2", SUBARU_MAIN_BUS, {"Steering_Angle": angle})
+
+
+class TestSubaruDPlatformFixedAngleSafety(TestSubaruDPlatformAngleSafety):
+  FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE | SubaruSafetyFlags.D_PLATFORM | \
+    SubaruSafetyFlags.FIXED_ANGLE_LIMITS
+  STEER_ANGLE_MAX = 545
+  ANGLE_RATE_BP = [0., 5., 35.]
+  ANGLE_RATE_UP = [5., .8, .15]
+  ANGLE_RATE_DOWN = [5., .8, .15]
+
+  def test_rt_limits(self):
+    raise unittest.SkipTest("Breakpoint angle limits do not enforce a real-time message frequency")
+
+
+class TestSubaruDPlatformStopStartSafety(TestSubaruDPlatformAngleSafety):
+  FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE | SubaruSafetyFlags.D_PLATFORM | \
+    SubaruSafetyFlags.STOP_START_BUTTON
+  TX_MSGS = TestSubaruDPlatformAngleSafety.TX_MSGS + [[SubaruMsg.Dashlights, SUBARU_ALT_BUS]]
+
+  def _stop_start_msg(self, pressed):
+    return self.packer.make_can_msg_safety(
+      "Dashlights", SUBARU_ALT_BUS, {"COUNTER": 0, "STOP_START": pressed},
+    )
+
+  def test_stop_start_tx_requires_pressed_bit(self):
+    self.assertTrue(self._tx(self._stop_start_msg(True)))
+    self.assertFalse(self._tx(self._stop_start_msg(False)))
 
 
 class TestSubaruDPlatformCameraAngleSafety(TestSubaruDPlatformAngleSafety):

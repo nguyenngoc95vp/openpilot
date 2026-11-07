@@ -205,7 +205,7 @@ static void tick_handler(void) {
       #ifdef PANDA_HKG_REMOTE_START
       started = started || hkg_remote_climate_wake;
       #endif
-      bootkick_tick(started, recent_heartbeat);
+      bootkick_tick(started, recent_heartbeat, wake_on_can);
 
       // increase heartbeat counter and cap it at the uint32 limit
       if (heartbeat_counter < UINT32_MAX) {
@@ -283,6 +283,9 @@ static void tick_handler(void) {
       if (ignition_can_cnt > 2U) {
         ignition_can = false;
       }
+      if (wake_on_can_cnt > 2U) {
+        wake_on_can = false;
+      }
       #ifdef PANDA_HKG_REMOTE_START
       if (hkg_remote_climate_wake_cnt > 2U) {
         hkg_remote_climate_wake = false;
@@ -293,6 +296,7 @@ static void tick_handler(void) {
       uptime_cnt += 1U;
       safety_mode_cnt += 1U;
       ignition_can_cnt += 1U;
+      wake_on_can_cnt += 1U;
       #ifdef PANDA_HKG_REMOTE_START
       hkg_remote_climate_wake_cnt += 1U;
       #endif

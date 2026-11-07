@@ -138,9 +138,6 @@ class LongControl:
   def update_mpc_mode(self, experimental_mode):
     new_mode = 'blended' if experimental_mode else 'acc'
 
-    if self.transitioning and self.prev_mode == 'blended' and self.current_mode == 'acc':
-      self.mode_transition_timer = 0.0
-
     if new_mode != self.current_mode:
       self.prev_mode = self.current_mode
       self.transitioning = True
@@ -168,12 +165,16 @@ class LongControl:
     if not preserve_stop_release:
       self.stop_release_counter = 0
 
-  def _stop_release_ready(self, CS, a_target, should_stop, has_lead, starpilot_toggles):
+  def _stop_release_ready(self, CS, a_target, should_stop, has_lead, starpilot_toggles, leads=None):
     if self.long_control_state != LongCtrlState.stopping:
       self.stop_release_counter = 0
       return True
 
     if should_stop or CS.brakePressed:
+      self.stop_release_counter = 0
+      return False
+
+    if self.vehicle_tuning.hold_toyota_corolla_for_stopped_lead(CS.vEgo, leads):
       self.stop_release_counter = 0
       return False
 
@@ -254,7 +255,9 @@ class LongControl:
       )
 
     previous_long_control_state = self.long_control_state
-    allow_stopping_release = self._stop_release_ready(CS, a_target, should_stop, has_lead, starpilot_toggles)
+    allow_stopping_release = self._stop_release_ready(
+      CS, a_target, should_stop, has_lead, starpilot_toggles, leads=leads,
+    )
     self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
                                                        should_stop, CS.brakePressed,
                                                        CS.cruiseState.standstill, starpilot_toggles,
@@ -275,7 +278,7 @@ class LongControl:
         output_accel = min(output_accel, 0.0)
         output_accel -= starpilot_toggles.stoppingDecelRate * DT_CTRL
       output_accel = self.vehicle_tuning.shape_stopping_accel(
-        output_accel, a_target, should_stop, CS.vEgo, has_lead, starpilot_toggles.stopAccel,
+        output_accel, a_target, should_stop, CS.vEgo, has_lead, starpilot_toggles.stopAccel, leads=leads,
       )
       output_accel = self._apply_moving_stop_target_follow(output_accel, a_target, should_stop, CS, starpilot_toggles)
       self.reset(preserve_stop_release=True)
@@ -330,6 +333,9 @@ class LongControl:
       freeze_integrator = self.vehicle_tuning.get_integrator_freeze(
         self.last_output_accel, a_target, error, CS.vEgo, accel_limits,
       )
+      leaving_experimental = self.transitioning and self.prev_mode == 'blended' and self.current_mode == 'acc'
+      if leaving_experimental:
+        freeze_integrator = True
       raw_output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=feedforward,
                                          freeze_integrator=freeze_integrator)
       raw_output_accel = self._cap_positive_output_on_negative_target(raw_output_accel, a_target, error, CS)
@@ -347,7 +353,13 @@ class LongControl:
         raw_output_accel, CS.vEgo, should_stop, leads,
       )
 
-      if self.transitioning and self.prev_mode == 'acc' and self.current_mode == 'blended':
+      if leaving_experimental:
+        if raw_output_accel > self.last_output_accel:
+          progress = min(1.0, self.mode_transition_timer / max(self.mode_transition_duration, 1e-3))
+          output_accel = self.last_output_accel + (raw_output_accel - self.last_output_accel) * progress
+        else:
+          output_accel = raw_output_accel
+      elif self.transitioning and self.prev_mode == 'acc' and self.current_mode == 'blended':
         if raw_output_accel < 0 and raw_output_accel < self.last_output_accel:
           progress = min(1.0, self.mode_transition_timer / self.mode_transition_duration)
           # Soften transition at low urgency, but keep sharp for high decel

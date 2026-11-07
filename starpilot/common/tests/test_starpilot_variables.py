@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.starpilot.common import starpilot_variables as spv
 
 
@@ -19,6 +21,20 @@ def test_tss2_toyota_keeps_main_aol_button_path():
 def test_hyundai_and_honda_keep_lkas_aol_button_path():
   assert spv._lkas_allowed_for_aol("honda", 0, []) is True
   assert spv._lkas_allowed_for_aol("hyundai", spv.HyundaiFlags.CANFD, []) is True
+
+
+def test_ford_can_map_lkas_button_to_aol():
+  assert spv._lkas_allowed_for_aol("ford", 0, []) is True
+
+
+def test_volvo_aol_is_held_off_until_pscm_sequence_is_validated():
+  assert spv.always_on_lateral_available(SimpleNamespace(brand="volvo")) is False
+  assert spv.always_on_lateral_available(SimpleNamespace(brand="honda")) is True
+
+
+def test_tesla_aol_capability_includes_preap():
+  for fingerprint in ("TESLA_MODEL_S_PREAP", "TESLA_MODEL_S_HW1", "TESLA_MODEL_X_HW1", "TESLA_MODEL_3", "TESLA_MODEL_Y"):
+    assert spv.always_on_lateral_available(SimpleNamespace(brand="tesla", carFingerprint=fingerprint))
 
 
 def test_explicit_main_cruise_aol_mapping_is_not_disabled_by_longitudinal_gate():
@@ -128,6 +144,65 @@ class _FakeParams:
     self.floats.pop(key, None)
     self.ints.pop(key, None)
     self.bools.pop(key, None)
+
+
+def test_ford_lkas_default_migrates_from_experimental_to_aol_toggle():
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]})
+
+  assert spv.migrate_ford_lkas_button_default("ford", params) is True
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["AOL_TOGGLE"]
+  assert params.get_bool(spv.FORD_LKAS_MIGRATION_KEY) is True
+
+  params.put_int("LKASButtonControl", spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"])
+  assert spv.migrate_ford_lkas_button_default("ford", params) is False
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+
+
+def test_ford_lkas_default_migration_preserves_custom_mapping():
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["BOOKMARK"]})
+
+  assert spv.migrate_ford_lkas_button_default("ford", params) is True
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["BOOKMARK"]
+
+
+def test_ford_lkas_default_migration_ignores_other_brands():
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]})
+
+  assert spv.migrate_ford_lkas_button_default("honda", params) is False
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+  assert params.get_bool(spv.FORD_LKAS_MIGRATION_KEY) is False
+
+
+def test_sonata_hybrid_lkas_default_migrates_once_without_enabling_aol():
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]})
+
+  assert spv.migrate_sonata_hybrid_lkas_button_default("HYUNDAI_SONATA_HYBRID", params) is True
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["AOL_TOGGLE"]
+  assert params.get_bool(spv.SONATA_HYBRID_LKAS_MIGRATION_KEY) is True
+  assert params.get_bool("AlwaysOnLateral") is False
+
+  params.put_int("LKASButtonControl", spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"])
+  assert spv.migrate_sonata_hybrid_lkas_button_default("HYUNDAI_SONATA_HYBRID", params) is False
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+
+
+@pytest.mark.parametrize("action", [value for value in spv.BUTTON_FUNCTIONS.values()
+                                  if value != spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]])
+def test_sonata_hybrid_lkas_default_preserves_custom_mapping(action):
+  params = _FakeParams(ints={"LKASButtonControl": action})
+
+  assert spv.migrate_sonata_hybrid_lkas_button_default(spv.HYUNDAI_CAR.HYUNDAI_SONATA_HYBRID, params) is True
+  assert params.get_int("LKASButtonControl") == action
+
+
+@pytest.mark.parametrize("car_model", [candidate for candidate in spv.HYUNDAI_CAR
+                                     if candidate != spv.HYUNDAI_CAR.HYUNDAI_SONATA_HYBRID] + ["FORD_ESCAPE_MK4", "MOCK"])
+def test_sonata_hybrid_lkas_default_ignores_other_vehicles(car_model):
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]})
+
+  assert spv.migrate_sonata_hybrid_lkas_button_default(car_model, params) is False
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+  assert params.get_bool(spv.SONATA_HYBRID_LKAS_MIGRATION_KEY) is False
 
 
 def test_sync_reboot_marker_uses_manager_guard(tmp_path):
@@ -257,6 +332,22 @@ def test_disabled_conditional_experimental_toggles_are_off(monkeypatch, tmp_path
   assert toggles.conditional_signal_lane_detection is False
 
 
+def test_big_ui_exposes_developer_toggles_without_persisting_developer_ui(monkeypatch, tmp_path):
+  params_cls = spv.Params
+
+  def isolated_params(_path=None, memory=False, return_defaults=False):
+    return params_cls(str(tmp_path / ("memory" if memory else "params")), return_defaults=return_defaults)
+
+  monkeypatch.setattr(spv, "Params", isolated_params)
+  monkeypatch.setattr(spv.HARDWARE, "get_device_type", lambda: "tici")
+  monkeypatch.delenv("BIG", raising=False)
+
+  variables = spv.StarPilotVariables()
+
+  assert variables.starpilot_toggles.developer_ui is True
+  assert variables.params_raw.get_bool("DeveloperUI") is False
+
+
 def test_device_shutdown_hours_convert_directly_to_seconds():
   assert spv.device_shutdown_seconds(6) == 6 * 60 * 60
   assert spv.device_shutdown_seconds(0) == 60 * 60
@@ -292,4 +383,14 @@ def test_set_speed_limit_unavailable_on_stock_pcm_without_helper():
 def test_speed_limit_controller_available_on_openpilot_longitudinal_or_redneck():
   assert spv.speed_limit_controller_available(openpilot_longitudinal=True, redneck_cruise=False) is True
   assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=True) is True
+
+
+def test_toyota_pcm_cruise_uses_hardware_reverse_instead_of_software_intervals():
+  assert spv.software_cruise_intervals_available(True, "toyota", True, True, True) is False
+  assert spv.reverse_cruise_available(True, "toyota", True) is True
+
+
+def test_non_toyota_software_cruise_keeps_custom_intervals():
+  assert spv.software_cruise_intervals_available(True, "hyundai", False, True, True) is True
+  assert spv.reverse_cruise_available(True, "hyundai", False) is False
   assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=False) is False

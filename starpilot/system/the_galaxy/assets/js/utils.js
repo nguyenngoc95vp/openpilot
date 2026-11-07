@@ -38,6 +38,20 @@ export function parseErrorLogToDate(filename) {
 }
 
 /**
+ * Escape a value for interpolation into an HTML string
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+}
+
+/**
  * Capitalize the first character of a string
  * @param {string} str
  * @returns {string}
@@ -53,6 +67,7 @@ export function showSidebar() {
   const html = document.documentElement
   document.getElementById("sidebar")?.classList.add("visible")
   document.getElementById("sidebarUnderlay")?.classList.remove("hidden")
+  document.getElementById("menu_button")?.setAttribute("aria-expanded", "true")
   html.classList.add("no_scroll")
 }
 
@@ -63,6 +78,7 @@ export function hideSidebar() {
   const html = document.documentElement
   document.getElementById("sidebar")?.classList.remove("visible")
   document.getElementById("sidebarUnderlay")?.classList.add("hidden")
+  document.getElementById("menu_button")?.setAttribute("aria-expanded", "false")
   html.classList.remove("no_scroll")
 }
 
@@ -77,6 +93,7 @@ export function isGalaxyTunnel() {
 export function galaxyPath(path) {
   const suffix = path.startsWith("/") ? path : `/${path}`
   if (!isGalaxyTunnel()) return suffix
+  if (suffix === "/api" || suffix.startsWith("/api/")) return suffix
 
   const firstPathSegment = window.location.pathname.split("/").filter(Boolean)[0] || ""
   const slug = /^[A-Za-z0-9]{16}$/.test(firstPathSegment) ? `/${firstPathSegment}` : ""

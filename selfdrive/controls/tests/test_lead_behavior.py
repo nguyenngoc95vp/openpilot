@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_far_lead_coast_headway_floor
 from openpilot.selfdrive.controls.lib.lead_behavior import (
   get_tracked_lead_catchup_bias,
   is_radarless_matched_follow_window,
@@ -15,6 +18,50 @@ def test_tracked_lead_catchup_bias_for_hanging_gap():
 def test_tracked_lead_catchup_bias_ignores_near_desired_gap():
   bias = get_tracked_lead_catchup_bias(31.4, 50.0, 38.0, 0.1)
   assert bias == 0.0
+
+
+def test_tracked_lead_catchup_bias_corrects_lightning_aggressive_follow_bookmark():
+  default_bias = get_tracked_lead_catchup_bias(
+    31.75,
+    46.2,
+    34.0,
+    0.0,
+    v_cruise=37.55,
+    y_rel=0.1,
+  )
+  bias = get_tracked_lead_catchup_bias(
+    31.75,
+    46.2,
+    34.0,
+    0.0,
+    v_cruise=37.55,
+    y_rel=0.1,
+    min_headway_margin=0.20,
+    full_headway_margin=0.45,
+  )
+
+  assert default_bias == 0.0
+  assert bias > 2.0
+
+
+def test_tracked_lead_catchup_bias_handles_crv_hanging_gap():
+  tuned_bias = get_tracked_lead_catchup_bias(
+    19.8,
+    85.0,
+    43.636,
+    1.7,
+    v_cruise=20.44,
+    y_rel=-0.54,
+    min_headway_margin=0.10,
+    full_headway_margin=0.35,
+    bias_gain=1.25,
+    bias_cap=65.0,
+    speed_range=(10.0, 18.0),
+    fade_margins=(0.75, 6.5),
+    cruise_error_full=0.75,
+  )
+
+  assert tuned_bias > 40.0
 
 
 def test_tracked_lead_catchup_bias_ignores_very_far_gap():
@@ -92,6 +139,34 @@ def test_disable_far_lead_throttle_rejects_route_like_highway_stab_case():
 def test_disable_far_lead_throttle_rejects_large_gap_near_pace_matched_case():
   should_disable = should_disable_far_lead_throttle(32.43, 72.4, 56.0, 1.30, False)
   assert not should_disable
+
+
+def test_silverado_far_lead_coast_does_not_cut_throttle_at_hanging_highway_gap():
+  truck = SimpleNamespace(brand="gm", carFingerprint="CHEVROLET_SILVERADO", enableGasInterceptorDEPRECATED=False)
+  # Route 15c: the old coast gate repeatedly closed at roughly 60 m, not 0.75 s.
+  scene = (34.0, 57.0, 43.0, 1.0, False)
+  assert should_disable_far_lead_throttle(*scene)
+  assert not should_disable_far_lead_throttle(*scene, get_far_lead_coast_headway_floor(truck))
+
+
+def test_silverado_far_lead_coast_still_works_near_requested_gap():
+  truck = SimpleNamespace(brand="gm", carFingerprint="CHEVROLET_SILVERADO", enableGasInterceptorDEPRECATED=False)
+  floor = get_far_lead_coast_headway_floor(truck)
+  assert should_disable_far_lead_throttle(34.0, 40.0, 33.0, 0.6, False, floor)
+  assert not should_disable_far_lead_throttle(34.0, 40.0, 33.0, 4.0, False, floor)
+  assert not should_disable_far_lead_throttle(15.0, 24.0, 16.0, 0.6, False, floor)
+  assert not should_disable_far_lead_throttle(34.0, 40.0, 33.0, 0.6, True, floor)
+
+
+def test_far_lead_coast_tune_is_only_for_non_pedal_gm_trucks():
+  for fingerprint in ("CHEVROLET_SILVERADO", "CHEVROLET_SILVERADO_CC"):
+    truck = SimpleNamespace(brand="gm", carFingerprint=fingerprint, enableGasInterceptorDEPRECATED=False)
+    assert get_far_lead_coast_headway_floor(truck) == 1.25
+    truck.enableGasInterceptorDEPRECATED = True
+    assert get_far_lead_coast_headway_floor(truck) == 1.75
+  for brand, fingerprint in (("gm", "CHEVROLET_BOLT_EUV"), ("ford", "FORD_F_150_LIGHTNING_MK1"), ("hyundai", "HYUNDAI_IONIQ_6")):
+    assert get_far_lead_coast_headway_floor(SimpleNamespace(brand=brand, carFingerprint=fingerprint)) == 1.75
+  assert get_far_lead_coast_headway_floor(None) == 1.75
 
 
 def test_should_track_lead_keeps_radar_leads_on_model_horizon():

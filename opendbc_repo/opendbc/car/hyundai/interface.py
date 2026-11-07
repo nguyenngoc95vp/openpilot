@@ -1,11 +1,14 @@
 import time
+# Provenance: portions of HKG angle integration are adapted from sunnypilot/opendbc's
+# hkg-angle-steering-2025 branch at cc4b08625. See CREDITS.md and THIRD_PARTY_NOTICES.md.
 from opendbc.car import get_safety_config, structs, uds
+from opendbc.car.hyundai import hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, CAR, CarControllerParams, \
                                                    CANFD_UNSUPPORTED_LONGITUDINAL_CAR, \
                                                    CANFD_SECURITYACCESS_CAR, \
                                                    CANFD_ANGLE_LONGITUDINAL_CAR, \
-                                                   CANFD_RADAR_LIVE_LONGITUDINAL_CAR, \
+                                                   CANFD_RADAR_ECU_KEEPALIVE_CAR, \
                                                    RADAR_LIVE_LONGITUDINAL_CAR, \
                                                    UNSUPPORTED_LONGITUDINAL_CAR, HyundaiSafetyFlags, \
                                                    LEGACY_LONGITUDINAL_CAR, \
@@ -25,13 +28,23 @@ from openpilot.starpilot.common.testing_grounds import testing_ground
 ButtonType = structs.CarState.ButtonEvent.Type
 Ecu = structs.CarParams.Ecu
 
+
+def get_communication_control_request(car_fingerprint):
+  if car_fingerprint in CANFD_RADAR_ECU_KEEPALIVE_CAR:
+    return bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.ENABLE_RX_DISABLE_TX,
+                  uds.MESSAGE_TYPE.NORMAL])
+
+  return bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX,
+                uds.MESSAGE_TYPE.NORMAL])
+
 # Cancel button can sometimes be ACC pause/resume button, main button can also enable on some cars
 ENABLE_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.cancel, ButtonType.mainCruise)
 
 # Track when ECU disable happened - used to permanently suppress CAN errors from disabled ECU
 ECU_DISABLE_TIMESTAMP = 0.0
 KONA_NON_SCC_FCA_RADAR_ADDR = 0x602
-KIA_EV9_ACCEL_MAX = 2.5
+KIA_EV9_ACCEL_MAX = 2.2
+RAY_PEDAL_SENSOR_ADDR = 0x201
 
 
 def apply_platform_longitudinal_params(ret: structs.CarParams) -> None:
@@ -48,7 +61,7 @@ def apply_platform_longitudinal_params(ret: structs.CarParams) -> None:
 
 def apply_kia_ev6_gt_line_longitudinal_params(ret: structs.CarParams) -> None:
   ret.startAccel = 1.4
-  ret.longitudinalActuatorDelay = 0.35
+  ret.longitudinalActuatorDelay = 0.5
   ret.vEgoStarting = 0.5
 
 
@@ -188,6 +201,8 @@ class CarInterface(CarInterfaceBase):
       if ret.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
         ret.steerControlType = structs.CarParams.SteerControlType.angle
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CANFD_ANGLE_STEERING.value
+        if candidate == CAR.KIA_SPORTAGE_HEV_2026:
+          ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.CANFD_NO_STOCK_LKA.value
       if candidate == CAR.HYUNDAI_IONIQ_6:
         # Keep lateral active through stops: zeroing torque at standstill dropped the
         # stop-turn hold and forced a rate-limit re-ramp from zero on every pull-away
@@ -223,6 +238,9 @@ class CarInterface(CarInterfaceBase):
         ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.hyundaiLegacy)]
       else:
         ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.hyundai, 0)]
+
+      if candidate == CAR.KIA_RAY_EV and fingerprint[CAN.CAM].get(0x485) == 8:
+        ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CAN_REFRESH_MSGS.value
 
       if ret.flags & HyundaiFlags.CAMERA_SCC:
         ret.safetyConfigs[0].safetyParam |= HyundaiSafetyFlags.CAMERA_SCC.value
@@ -288,6 +306,23 @@ class CarInterface(CarInterfaceBase):
     elif ret.flags & HyundaiFlags.FCEV:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.FCEV_GAS.value
 
+    if (candidate == CAR.KIA_RAY_EV and fingerprint[0].get(RAY_PEDAL_SENSOR_ADDR) == 6 and
+        ret.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CAN_REFRESH_MSGS and
+        ret.safetyConfigs[-1].safetyParam & HyundaiStarPilotSafetyFlags.HAS_LDA_BUTTON):
+      ret.enableGasInterceptorDEPRECATED = True
+      ret.alphaLongitudinalAvailable = True
+      ret.openpilotLongitudinalControl = True
+      ret.pcmCruise = False
+      ret.radarUnavailable = True
+      ret.autoResumeSng = False
+      ret.minEnableSpeed = -1.0
+      ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.LONG.value
+      ret.longitudinalTuning.kpBP = [0.0, 5.0, 15.0, 35.0]
+      ret.longitudinalTuning.kpV = [0.095, 0.085, 0.065, 0.050]
+      ret.longitudinalTuning.kiBP = [0.0, 3.0, 6.0, 35.0]
+      ret.longitudinalTuning.kiV = [0.07, 0.10, 0.15, 0.24]
+      ret.longitudinalTuning.kfDEPRECATED = 1.0
+
     # Car specific configuration overrides
 
     if candidate == CAR.GENESIS_G90:
@@ -303,8 +338,8 @@ class CarInterface(CarInterfaceBase):
 
     if candidate == CAR.HYUNDAI_ELANTRA_2021:
       ret.longitudinalActuatorDelay = 0.22
-      ret.stopAccel = -0.85
-      ret.stoppingDecelRate = 0.35
+      ret.stopAccel = -1.1
+      ret.stoppingDecelRate = 0.55
 
     if candidate == CAR.HYUNDAI_ELANTRA_HEV_2024:
       ret.longitudinalActuatorDelay = 0.22
@@ -348,14 +383,7 @@ class CarInterface(CarInterfaceBase):
     params = Params()
 
     if communication_control is None:
-      if CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR:
-        # Don't use 0x80 suppress bit so we can read the ECU response.
-        # Use ENABLE_RX_DISABLE_TX (0x01) so the ECU can still receive from rear radars for BSM
-        # while blocking SCC TX.
-        communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.ENABLE_RX_DISABLE_TX, uds.MESSAGE_TYPE.NORMAL])
-      else:
-        # 0x80 silences response for other cars (original behavior)
-        communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX, uds.MESSAGE_TYPE.NORMAL])
+      communication_control = get_communication_control_request(CP.carFingerprint)
 
     ecu_log(f"=== init() called: opLong={CP.openpilotLongitudinalControl}, flags=0x{CP.flags:x}, safetyParam={CP.safetyConfigs[-1].safetyParam} ===")
 
@@ -371,11 +399,25 @@ class CarInterface(CarInterfaceBase):
         skip_disable_ecu = True
 
       if not skip_disable_ecu:
+        disable_can_recv = can_recv
+        if CP.carFingerprint in (CAR.KIA_EV6, CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN) and can_recv is not None:
+          hyundaicanfd.cache_adrv_0x51_template(CP.carFingerprint, None)
+          base_can_recv = can_recv
+          adrv_bus = CanBus(CP).ACAN
+
+          def disable_can_recv(*args, **kwargs):
+            packets = base_can_recv(*args, **kwargs)
+            for packet in packets or []:
+              for msg in packet:
+                if msg.src == adrv_bus and msg.address == 0x51:
+                  hyundaicanfd.cache_adrv_0x51_template(CP.carFingerprint, msg.dat)
+            return packets
+
         # Try ECU disable. If it succeeds (IGN-ON mode), enable longitudinal.
         # If it fails (READY mode returns NRC 0x22, or timeout), strip LONG safety flag
         # so panda forwards stock SCC messages normally (lateral-only mode).
         ecu_log(f"=== ECU DISABLE attempt: addr=0x{addr:x}, bus={bus} ===")
-        ecu_disabled = disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
+        ecu_disabled = disable_ecu(disable_can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control,
                                    reset=bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED))
 
         if CP.carFingerprint in (CAR.HYUNDAI_IONIQ_6, CAR.HYUNDAI_IONIQ_5_PE):

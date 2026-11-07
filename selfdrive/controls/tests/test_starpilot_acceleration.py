@@ -38,6 +38,7 @@ def make_toggles(**overrides):
     "acceleration_profile": ACCELERATION_PROFILES["STANDARD"],
     "deceleration_profile": DECELERATION_PROFILES["ECO"],
     "custom_accel_profile": False,
+    "custom_accel_profile_breakpoints": A_CRUISE_MAX_BP_CUSTOM,
     "custom_accel_profile_values": [],
     "ev_tuning": True,
     "truck_tuning": False,
@@ -63,6 +64,7 @@ def make_sm(*, set_speed_kph=100.0, lead_one=None, lead_two=None, standstill=Fal
     "carState": SimpleNamespace(vCruise=set_speed_kph, standstill=standstill, vEgoCluster=v_ego_cluster),
     "carControl": SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
     "controlsState": SimpleNamespace(forceDecel=force_decel),
+    "selfdriveState": SimpleNamespace(personality=1),
     "radarState": SimpleNamespace(
       leadOne=lead_one or make_lead(),
       leadTwo=lead_two or make_lead(),
@@ -194,6 +196,20 @@ def test_traffic_mode_overrides_custom_accel_profile():
   accel.update(5.0, sm, make_toggles(custom_accel_profile=True, custom_accel_profile_values=[6.0] * 7))
 
   assert accel.max_accel == pytest.approx(get_max_accel_traffic(5.0))
+
+
+def test_custom_accel_profile_uses_configured_breakpoints():
+  accel = StarPilotAcceleration(FakePlanner(v_cruise=25.0))
+  sm = make_sm()
+  breakpoints = [0.0, 10.0, 20.0]
+
+  accel.update(10.0, sm, make_toggles(
+    custom_accel_profile=True,
+    custom_accel_profile_breakpoints=breakpoints,
+    custom_accel_profile_values=[3.0, 1.25, 0.5],
+  ))
+
+  assert accel.max_accel == pytest.approx(1.25)
 
 
 def test_traffic_mode_sets_soft_cruise_decel_floor():

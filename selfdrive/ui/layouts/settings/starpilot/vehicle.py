@@ -7,7 +7,7 @@ import time
 import pyray as rl
 
 from openpilot.system.hardware import HARDWARE
-from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import DialogResult, Widget
@@ -22,6 +22,9 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   PanelManagerView,
   RowToggleTile,
   SPACING,
+  SETTINGS_ROW_TITLE_FONT_SIZE,
+  SETTINGS_ROW_SUBTITLE_FONT_SIZE,
+  SETTINGS_ROW_VALUE_FONT_SIZE,
   SettingRow,
   TileGrid,
   TOGGLE_MIN_HEIGHT,
@@ -29,6 +32,8 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   GROUP_HEADER_GAP,
   GROUP_HEADER_HEIGHT,
   GROUP_HEADER_LINE_GAP,
+  GROUP_HEADER_TOTAL_HEIGHT,
+  GROUP_TOP_INSET,
   draw_group_header,
   draw_list_group_shell,
   draw_rounded_fill,
@@ -128,9 +133,6 @@ class VehicleSettingsManagerView(PanelManagerView):
                    float(self._controller._params.get_int("LockDoorsTimer")),
                    f"{self._controller._params.get_int('LockDoorsTimer')}s"),
                  on_click=lambda: self._controller._on_select("LockDoorsTimer")))
-      rows.append(SettingRow("ClusterOffset", "value", tr_noop("Dashboard Speed Offset"),
-                 get_value=lambda: f"{self._controller._params.get_float('ClusterOffset'):.3f}x",
-                 on_click=lambda: self._controller._on_select("ClusterOffset")))
     return rows
 
   def _combo_value(self, keys: tuple[str, ...]) -> str:
@@ -192,17 +194,17 @@ class VehicleSettingsManagerView(PanelManagerView):
 
     row_h = rect.height
     if row_h < 90:
-      title_size = 36
-      subtitle_size = 26
-      value_size = 32
+      title_size = 30
+      subtitle_size = 24
+      value_size = 26
     elif row_h < 105:
-      title_size = 42
-      subtitle_size = 32
-      value_size = 38
+      title_size = 34
+      subtitle_size = 26
+      value_size = 28
     else:
-      title_size = 49
-      subtitle_size = 38
-      value_size = 44
+      title_size = SETTINGS_ROW_TITLE_FONT_SIZE
+      subtitle_size = SETTINGS_ROW_SUBTITLE_FONT_SIZE
+      value_size = SETTINGS_ROW_VALUE_FONT_SIZE
 
     if row.type == "value" or row.id.startswith("combo:"):
       value_text = row.get_value() if row.get_value else ""
@@ -222,10 +224,9 @@ class VehicleSettingsManagerView(PanelManagerView):
                              style=PANEL_STYLE)
 
   def _draw_section(self, y: float, x: float, width: float, title: str, rows: list[SettingRow], row_height: float = ROW_HEIGHT) -> float:
-    hdr_oh = GROUP_HEADER_HEIGHT + GROUP_HEADER_LINE_GAP + GROUP_HEADER_GAP
-    group_h = len(rows) * row_height + hdr_oh + 4
+    group_h = len(rows) * row_height + GROUP_HEADER_TOTAL_HEIGHT + GROUP_TOP_INSET
     draw_list_group_shell(rl.Rectangle(x, y, width, group_h), style=PANEL_STYLE)
-    current_y = y + 4
+    current_y = y + GROUP_TOP_INSET
     current_y = draw_group_header(x + 24, current_y, width - 48, tr(title))
     for i, row in enumerate(rows):
       self._draw_row(rl.Rectangle(x, current_y, width, row_height), row, i == len(rows) - 1)
@@ -242,7 +243,7 @@ class VehicleSettingsManagerView(PanelManagerView):
       rx = rect.x + col_w + self.COLUMN_GAP
 
       draw_list_group_shell(rl.Rectangle(rect.x, y, col_w, self._container_h), style=PANEL_STYLE)
-      row_y = y + 4
+      row_y = y + GROUP_TOP_INSET
       row_y = draw_group_header(rect.x + 24, row_y, col_w - 48, tr("Vehicle Identity"))
       for i, row in enumerate(identity_rows):
         self._draw_row(rl.Rectangle(rect.x, row_y, col_w, self._left_row_height),
@@ -250,6 +251,7 @@ class VehicleSettingsManagerView(PanelManagerView):
         row_y += self._left_row_height
 
       if steering_rows:
+        row_y += GROUP_TOP_INSET
         row_y = draw_group_header(rect.x + 24, row_y, col_w - 48, tr("Steering Controls"))
         for i, row in enumerate(steering_rows):
           self._draw_row(rl.Rectangle(rect.x, row_y, col_w, self._left_row_height),
@@ -258,7 +260,7 @@ class VehicleSettingsManagerView(PanelManagerView):
 
       if self._toggle_grid.tiles:
         draw_list_group_shell(rl.Rectangle(rx, y, col_w, self._container_h), style=PANEL_STYLE)
-        tile_y = y + 4
+        tile_y = y + GROUP_TOP_INSET
         tile_y = draw_group_header(rx + 24, tile_y, col_w - 48, tr("Features"))
         avail_h = self._container_h - (tile_y - y)
         self._render_page_grid(self._toggle_grid, rl.Rectangle(rx + 12, tile_y, col_w - 24, max(0.0, avail_h - 12)))
@@ -273,10 +275,9 @@ class VehicleSettingsManagerView(PanelManagerView):
           self._toggle_grid._columns = 3
         avail = width - 24
         th = self.measure_page_grid_height(self._toggle_grid, avail)
-        hdr_oh = GROUP_HEADER_HEIGHT + GROUP_HEADER_LINE_GAP + GROUP_HEADER_GAP
-        group_h = th + 24 + 4 + hdr_oh
+        group_h = th + 24 + GROUP_TOP_INSET + GROUP_HEADER_TOTAL_HEIGHT
         draw_list_group_shell(rl.Rectangle(rect.x, y, width, group_h), style=PANEL_STYLE)
-        features_y = y + 4
+        features_y = y + GROUP_TOP_INSET
         features_y = draw_group_header(rect.x + 24, features_y, width - 48, tr("Features"))
         self._render_page_grid(self._toggle_grid, rl.Rectangle(rect.x + 12, features_y, avail, max(0.0, group_h - (features_y - y) - 12)))
 
@@ -297,10 +298,9 @@ class VehicleSettingsManagerView(PanelManagerView):
         tiles_h = self.measure_page_grid_height(self._toggle_grid, width - 24)
 
     if self._uses_two_columns(width):
-      hdr_oh = GROUP_HEADER_HEIGHT + GROUP_HEADER_LINE_GAP + GROUP_HEADER_GAP
-      subsection_overhead = hdr_oh + 4
+      subsection_overhead = GROUP_HEADER_TOTAL_HEIGHT + GROUP_TOP_INSET
       if steering_rows:
-        subsection_overhead += hdr_oh
+        subsection_overhead += GROUP_HEADER_TOTAL_HEIGHT + GROUP_TOP_INSET
 
       avail_h = self._scroll_rect.height if self._scroll_rect else 760.0
       avail_for_rows = max(100.0, avail_h - subsection_overhead)
@@ -316,11 +316,10 @@ class VehicleSettingsManagerView(PanelManagerView):
       self._container_h = total_h
       return total_h
 
-    hdr_oh = GROUP_HEADER_HEIGHT + GROUP_HEADER_LINE_GAP + GROUP_HEADER_GAP
-    identity_natural_h = hdr_oh + 4 + len(identity_rows) * ROW_HEIGHT
-    steering_natural_h = hdr_oh + 4 + len(steering_rows) * ROW_HEIGHT
+    identity_natural_h = GROUP_HEADER_TOTAL_HEIGHT + GROUP_TOP_INSET + len(identity_rows) * ROW_HEIGHT
+    steering_natural_h = GROUP_HEADER_TOTAL_HEIGHT + GROUP_TOP_INSET + len(steering_rows) * ROW_HEIGHT
     left_natural_h = identity_natural_h + SECTION_GAP + steering_natural_h
-    tiles_overhead = 4 + hdr_oh + 24 if tiles_h else 0
+    tiles_overhead = GROUP_TOP_INSET + GROUP_HEADER_TOTAL_HEIGHT + 24 if tiles_h else 0
     return left_natural_h + tiles_h + tiles_overhead
 
   def _build_driving_toggles(self) -> list[dict]:
@@ -598,7 +597,7 @@ class ButtonActionComboDialog(Widget):
     title_size = 64
     ts = measure_text_cached(self._font_title, self._title, title_size)
     rl.draw_text_ex(self._font_title, self._title,
-                    rl.Vector2(int(dx + (dialog_w - ts.x) / 2), int(dy + 87)),
+                    rl.Vector2(int(dx + (dialog_w - ts.x) / 2), int(dy + 40)),
                     title_size, 0, rl.WHITE)
 
     font_label = gui_app.font(FontWeight.MEDIUM)
@@ -624,7 +623,7 @@ class ButtonActionComboDialog(Widget):
         rl.draw_line(int(row_rect.x + 24), sep_y, int(row_rect.x + row_rect.width - 24), sep_y, rl.Color(255, 255, 255, 16))
 
       title_x = int(row_rect.x + 24)
-      title_y = int(row_rect.y + (row_rect.height - title_fs) / 2)
+      title_y = int(row_rect.y + (row_rect.height - title_fs * FONT_SCALE) / 2)
       rl.draw_text_ex(self._font_title, self._labels[i], rl.Vector2(title_x, title_y), title_fs, 0, rl.WHITE)
 
       action_name = self._controller._get_action_name(self._keys[i])
@@ -634,12 +633,12 @@ class ButtonActionComboDialog(Widget):
       text_w = measure_text_cached(font_label, action_name, value_fs).x
       if text_w <= available_w:
         val_x = value_right - text_w
-        val_y = int(row_rect.y + (row_rect.height - value_fs) / 2)
+        val_y = int(row_rect.y + (row_rect.height - value_fs * FONT_SCALE) / 2)
         rl.draw_text_ex(font_value, action_name, rl.Vector2(val_x, val_y), value_fs, 0, rl.WHITE)
       else:
         draw_text_fit_common(
           font_value, action_name,
-          rl.Vector2(value_left, int(row_rect.y + (row_rect.height - value_fs) / 2)),
+          rl.Vector2(value_left, int(row_rect.y + (row_rect.height - value_fs * FONT_SCALE) / 2)),
           available_w, value_fs, color=rl.WHITE,
         )
 
@@ -777,8 +776,6 @@ class StarPilotVehicleSettingsLayout(_SettingsPage):
       self._on_select_model()
     elif key == "LockDoorsTimer":
       self._show_lock_timer_selector()
-    elif key == "ClusterOffset":
-      self._show_offset_selector()
     else:
       self._show_action_picker(key)
 
@@ -871,7 +868,7 @@ class StarPilotVehicleSettingsLayout(_SettingsPage):
       allowed_ids = set(range(9)) | {11, 12, 13, 14}
       if key == "LKASButtonControl":
         allowed_ids.add(9)
-      developer_access = self._params.get_bool("DeveloperUI") or self._params.get_bool("GalaxyDeveloperMode")
+      developer_access = gui_app.big_ui() or self._params.get_bool("DeveloperUI") or self._params.get_bool("GalaxyDeveloperMode")
       options = [o for o in ACTION_OPTIONS
                  if o["id"] in allowed_ids and
                  (cs.hasOpenpilotLongitudinal or not o.get("requires_longitudinal", False)) and
@@ -899,15 +896,6 @@ class StarPilotVehicleSettingsLayout(_SettingsPage):
     gui_app.push_widget(AetherSliderDialog(tr("Lock Doors Timer"), 0, 300, 5,
                                             self._params.get_int("LockDoorsTimer"), on_close,
                                             labels=_lock_doors_timer_labels(), color=PANEL_STYLE.accent))
-
-  def _show_offset_selector(self):
-    def on_close(res, val):
-      if res == DialogResult.CONFIRM:
-        self._params.put_float("ClusterOffset", float(val))
-
-    gui_app.push_widget(AetherSliderDialog(tr("Dashboard Speed Offset"), 1.000, 1.050, 0.001,
-                                            self._params.get_float("ClusterOffset"), on_close,
-                                            unit="x", color=PANEL_STYLE.accent))
 
   def _get_display_make(self) -> str:
     make = self._params.get("CarMake") or ""

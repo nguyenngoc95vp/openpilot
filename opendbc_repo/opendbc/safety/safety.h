@@ -12,6 +12,7 @@
 #include "opendbc/safety/modes/toyota.h"
 #include "opendbc/safety/modes/tesla.h"
 #include "opendbc/safety/modes/tesla_preap.h"
+#include "opendbc/safety/modes/tesla_legacy.h"
 #include "opendbc/safety/modes/gm.h"
 #include "opendbc/safety/modes/ford.h"
 #include "opendbc/safety/modes/hyundai.h"
@@ -27,6 +28,7 @@
 #include "opendbc/safety/modes/elm327.h"
 #include "opendbc/safety/modes/body.h"
 #include "opendbc/safety/modes/psa.h"
+#include "opendbc/safety/modes/volvo.h"
 
 #ifdef CANFD
 #include "opendbc/safety/modes/hyundai_canfd.h"
@@ -427,6 +429,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
     {SAFETY_RIVIAN, &rivian_hooks},
     {SAFETY_TESLA, &tesla_hooks},
     {SAFETY_TESLA_PREAP, &tesla_preap_hooks},
+    {SAFETY_VOLVO, &volvo_hooks},
 #ifdef CANFD
     {SAFETY_HYUNDAI_CANFD, &hyundai_canfd_hooks},
     {SAFETY_VOLKSWAGEN_MEB, &volkswagen_meb_hooks},
@@ -500,7 +503,8 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   int hook_config_count = sizeof(safety_hook_registry) / sizeof(safety_hook_config);
   for (int i = 0; i < hook_config_count; i++) {
     if (safety_hook_registry[i].id == mode) {
-      current_hooks = safety_hook_registry[i].hooks;
+      current_hooks = ((mode == SAFETY_TESLA) && GET_FLAG(param, TESLA_LEGACY_FLAG_HW1)) ?
+                      &tesla_legacy_hooks : safety_hook_registry[i].hooks;
       current_safety_mode = mode;
       current_safety_param = param;
       set_status = 0;  // set

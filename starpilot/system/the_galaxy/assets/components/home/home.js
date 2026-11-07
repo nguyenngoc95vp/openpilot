@@ -151,7 +151,11 @@ function fallbackDashboard(data, unit) {
       longestUndistractedDrive: { value: "0.0 hours", detail: "No clean drives" },
       cleanDriveStreak: { value: "0 drives", detail: "No clean drives" },
     },
+<<<<<<< HEAD
     device: { status: "Parked", online: true, uptimeSeconds: null, cpuTempC: null, powerDrawW: null },
+=======
+    device: { status: "Parked", online: true, uptimeSeconds: null, cpuTempC: null, gpuTempC: null },
+>>>>>>> upstream/StarPilot
     storage: {
       freeBytes: 0,
       usedBytes: 0,
@@ -426,6 +430,7 @@ function renderStorage(storage) {
 function renderVitals(device) {
   const uptime = device.uptimeSeconds == null ? "unknown" : formatDuration(device.uptimeSeconds);
   const cpu = device.cpuTempC == null ? "unknown" : `${formatInt(device.cpuTempC)} C`;
+  const gpu = device.gpuTempC == null ? "unknown" : `${formatInt(device.gpuTempC)} C`;
   const lanIp = device.lanIp || "unknown";
   const networkName = device.networkName || "No wireless connectivity";
   const power = device.powerDrawW == null ? "unknown" : `${formatOneDecimal(device.powerDrawW)} W`;
@@ -440,9 +445,13 @@ function renderVitals(device) {
         <div><span>Network</span><strong>${escapeHtml(networkName)}</strong></div>
         <div><span>Uptime</span><strong>${escapeHtml(uptime)}</strong></div>
         <div><span>CPU temp</span><strong>${escapeHtml(cpu)}</strong></div>
+<<<<<<< HEAD
         <div><span>Power usage</span><strong>${escapeHtml(power)}</strong></div>
         <div><span>Power used</span><strong>${escapeHtml(powerUsed)}</strong></div>
         <div><span>Battery capacity</span><strong>${escapeHtml(batteryCapacity)}</strong></div>
+=======
+        <div><span>GPU temp</span><strong>${escapeHtml(gpu)}</strong></div>
+>>>>>>> upstream/StarPilot
       </div>
     </section>
   `;
@@ -593,6 +602,16 @@ function renderDashboard(state) {
   scheduleDashboardRefresh(dashboard);
 }
 
+const STATS_ATTEMPT_TIMEOUTS_MS = [5000, 20000];
+
+async function fetchDashboardStats(timeoutMs) {
+  const statsResponse = await withTimeout(fetch("/api/stats"), timeoutMs, "stats request");
+
+  if (!statsResponse.ok) throw new Error(`stats API error: ${statsResponse.status}`);
+
+  return withTimeout(statsResponse.json(), timeoutMs, "stats JSON parse");
+}
+
 async function initializeHome(force = false) {
   if (force) {
     clearDashboardRefreshTimer();
@@ -600,20 +619,27 @@ async function initializeHome(force = false) {
     renderDashboard(HOME_STATE);
   }
 
-  try {
-    const statsResponse = await withTimeout(fetch("/api/stats"), 5000, "stats request");
+  let statsJson = null;
+  let lastError = null;
+  for (const timeoutMs of STATS_ATTEMPT_TIMEOUTS_MS) {
+    try {
+      statsJson = await fetchDashboardStats(timeoutMs);
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
 
-    if (!statsResponse.ok) throw new Error(`stats API error: ${statsResponse.status}`);
-
-    const statsJson = await withTimeout(statsResponse.json(), 5000, "stats JSON parse");
+  if (lastError) {
+    HOME_STATE.status = "error";
+    HOME_STATE.error = lastError?.message || String(lastError);
+  } else {
     const payloadUnit = statsJson?.dashboard?.week?.distanceUnit || statsJson?.driveStats?.all?.unit;
 
     HOME_STATE.data = statsJson;
     HOME_STATE.unit = payloadUnit || HOME_STATE.unit || "miles";
     HOME_STATE.status = "ready";
-  } catch (err) {
-    HOME_STATE.status = "error";
-    HOME_STATE.error = err?.message || String(err);
   }
 
   renderDashboard(HOME_STATE);

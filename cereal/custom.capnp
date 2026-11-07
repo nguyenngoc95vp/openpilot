@@ -14,6 +14,7 @@ using Car = import "car.capnp";
 
 struct StarPilotCarControl @0x81c2f05a394cf4af {
   hudControl @0 :HUDControl;
+  steeringLimitInfo @1 :SteeringLimitInfo;
 
   struct HUDControl {
     audibleAlert @0 :AudibleAlert;
@@ -48,6 +49,16 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
       thisIsFine @21;
       uwu @22;
     }
+  }
+
+  struct SteeringLimitInfo {
+    valid @0 :Bool;
+    modelLimitErrorDeg @1 :Float32;
+    resumeLimitErrorDeg @2 :Float32;
+    cooperativeLimitErrorDeg @3 :Float32;
+    cooperativeOffsetDeg @4 :Float32;
+    monoTime @5 :UInt64;
+    combinedLimitErrorDeg @6 :Float32;
   }
 }
 
@@ -222,6 +233,13 @@ struct StarPilotPlan @0xf98d843bfd7004a3 {
   trackingLead @36 :Bool;
   stopSignConfirmed @37 :Bool;
   pulseGlideCoasting @38 :Bool;  # developer-only P&G phase for on-road status UI
+  # Curve Speed Controller diagnostics, for tuning and rollout validation
+  cscOverridden @39 :Bool;          # driver cancelled this curve with RES+
+  cscLearnedLatAccel @40 :Float32;  # learned comfort at the current curvature, before margin
+  cscBindingDistance @41 :Float32;  # distance to the horizon point setting the target, m
+  approachStopLength @42 :Float32;  # pre-commit distance to a detected stop, m; 0 when off
+  slcPresentedSpeedLimitSource @43 :Text;  # source of the shown accepted or pending posted limit
+  slcIsLimitingMaxSet @44 :Bool;  # SLC target is below the configured Max Set
 }
 
 struct StarPilotRadarState @0xb86e6369214c01c8 {
@@ -266,6 +284,7 @@ struct StarPilotSelfdriveState @0xf416ec09499d9d19 {
   alertSize @3 :AlertSize;
   alertType @4 :Text;
   alertSound @5 :Car.CarControl.HUDControl.AudibleAlert;
+  vEgo @6 :Float32;
 
   enum AlertStatus {
     normal @0;

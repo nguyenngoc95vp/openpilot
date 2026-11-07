@@ -34,6 +34,7 @@
 #define SAFETY_RIVIAN 33U
 #define SAFETY_VOLKSWAGEN_MEB 34U
 #define SAFETY_TESLA_PREAP 35U
+#define SAFETY_VOLVO 36U
 
 #define GET_BIT(msg, b) ((bool)!!(((msg)->data[((b) / 8U)] >> ((b) % 8U)) & 0x1U))
 #define GET_FLAG(value, mask) (((value) & (mask)) == (mask))
@@ -338,6 +339,7 @@ extern bool gm_remote_start_boots_comma;
 
 #define ALT_EXP_ALWAYS_ON_LATERAL 32
 #define ALT_EXP_GM_REMAP_CANCEL_TO_DISTANCE 64
+#define ALT_EXP_TOYOTA_AUTO_HOLD 128
 
 extern int alternative_experience;
 
@@ -380,4 +382,6 @@ extern const safety_hooks volkswagen_mqb_hooks;
 extern const safety_hooks volkswagen_pq_hooks;
 extern const safety_hooks rivian_hooks;
 extern const safety_hooks psa_hooks;
+extern const safety_hooks volvo_hooks;
 extern const safety_hooks tesla_preap_hooks;
+extern const safety_hooks tesla_legacy_hooks;

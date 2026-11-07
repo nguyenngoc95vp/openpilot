@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 import threading
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from cereal import log, messaging
 import pyray as rl
@@ -44,12 +43,13 @@ from openpilot.starpilot.common.maps_catalog import (
   sanitize_selected_locations_csv,
   schedule_label,
 )
-from openpilot.starpilot.common.maps_selection import COUNTRY_PREFIX, STATE_PREFIX
+from openpilot.starpilot.common.maps_download_progress import MAPS_STORAGE_CACHE_PARAM, load_maps_storage_cache
+from openpilot.starpilot.common.maps_selection import COUNTRY_PREFIX
+from openpilot.starpilot.common.starpilot_variables import MAPS_PATH as OFFLINE_MAPS_PATH
 
 
 NetworkType = log.DeviceState.NetworkType
 
-OFFLINE_MAPS_PATH = Path("/data/media/0/osm/offline")
 CANCEL_REQUEST_TIMEOUT = 3.0
 PANEL_STYLE = DEFAULT_PANEL_STYLE
 MAPS_METRICS = replace(AETHER_LIST_METRICS, header_height=0)
@@ -94,7 +94,7 @@ STATUS_CARD_HEIGHT = 232.0
 SEGMENTED_CONTROL_HEIGHT = 68.0
 BROWSER_SECTION_HEADER_HEIGHT = 56.0
 BROWSER_REGION_ROW_HEIGHT = 104.0
-BROWSER_EMPTY_STATE_HEIGHT = 128.0
+BROWSER_EMPTY_STATE_HEIGHT = 208.0
 BROWSER_INSET = 18.0
 
 HEADER_GAP = 16.0
@@ -260,8 +260,6 @@ class MapsManagerView(PanelManagerView):
           action_text_size=26,
           action_pill_height=56,
           action_pill_width=154,
-          title_size=32,
-          subtitle_size=22,
           row_separator=PANEL_STYLE.divider_color,
           current_bg=PANEL_STYLE.current_fill,
           current_border=PANEL_STYLE.current_border,
@@ -307,8 +305,6 @@ class MapsManagerView(PanelManagerView):
         action_text_size=26,
         action_pill_height=56,
         action_pill_width=154 if selected else 128,
-        title_size=32,
-        subtitle_size=22,
         row_separator=PANEL_STYLE.divider_color,
         current_bg=PANEL_STYLE.current_fill,
         current_border=PANEL_STYLE.current_border,
@@ -354,7 +350,7 @@ class MapsManagerView(PanelManagerView):
 
     # Subtitle / Body Progress Description (26pt)
     gui_text_box(
-      rl.Rectangle(content_x, rect.y + 58, summary_w, 54),
+      rl.Rectangle(content_x, rect.y + 58, summary_w, 68),
       self._controller._progress_body(),
       26,
       AetherListColors.SUBTEXT,
@@ -435,13 +431,10 @@ class StarPilotMapsLayout(_SettingsPage):
     self._worker_params = Params()
     self._map_sm = messaging.SubMaster(["mapdExtendedOut", "starpilotCarState"])
 
-    self._storage_text = "0 MB"
+    self._storage_text = tr("Calculating...")
+    self._storage_known = False
     self._has_downloaded_data = False
     self._storage_updated_at = 0.0
-    self._storage_refresh_thread: threading.Thread | None = None
-    self._storage_refresh_pending = False
-    self._storage_refresh_generation = 0
-    self._pending_storage_state: tuple[int, str, bool] | None = None
     self._download_started_at: float | None = None
     self._cancel_requested_at: float | None = None
     self._cancel_visual_until = 0.0
@@ -459,32 +452,28 @@ class StarPilotMapsLayout(_SettingsPage):
     )
     self._schedule_button = self._child(
       AetherButton(
-        lambda: tr("Update: {}").format(_localized_schedule_label(self._params.get('PreferredSchedule'))),
+        self._schedule_action_label,
         self._on_schedule,
         emphasized=False,
+        font_size=26,
       )
     )
 
     self._manager_view = MapsManagerView(self)
 
-    self._refresh_storage_cache(force=True)
+    self._refresh_storage_state(force=True)
     self._sync_download_state(force=True)
 
   def show_event(self):
     super().show_event()
-    # On panel launch, if no offline map files exist on disk and no download is actively running,
-    # reset any stale or default MapsSelected parameter so 0 regions show as selected on clean boot!
-    if not self._has_downloaded_data and not self._download_in_flight():
-      raw_selected = self._params.get("MapsSelected", encoding="utf-8") or ""
-      if raw_selected:
-        self._params.put("MapsSelected", "")
-        self._cached_selected_tokens = set()
+    self._refresh_storage_state(force=True)
+    raw_selected = self._params.get("MapsSelected", encoding="utf-8") or ""
+    self._cached_selected_tokens = _selected_token_set(raw_selected)
 
     if self._cancel_requested() and self._cancel_requested_at is None:
       self._cancel_requested_at = rl.get_time()
     if self._cancel_requested() and self._cancel_visual_until <= rl.get_time():
       self._cancel_visual_until = rl.get_time() + 2.5
-    self._refresh_storage_cache(force=True)
     self._sync_download_state(force=True)
 
   def hide_event(self):
@@ -497,15 +486,7 @@ class StarPilotMapsLayout(_SettingsPage):
       self._params.get("MapsSelected", encoding="utf-8") or ""
     )
     self._sync_download_state()
-    if self._pending_storage_state is not None:
-      generation, storage_text, has_downloaded_data = self._pending_storage_state
-      self._pending_storage_state = None
-      if generation == self._storage_refresh_generation:
-        self._storage_text = storage_text
-        self._has_downloaded_data = has_downloaded_data
-        self._storage_updated_at = rl.get_time()
-      self._storage_refresh_pending = False
-    self._refresh_storage_cache()
+    self._refresh_storage_state()
 
     if self._download_state.active:
       device.set_override_interactive_timeout(300)
@@ -559,46 +540,17 @@ class StarPilotMapsLayout(_SettingsPage):
       progress_text=progress_text,
     )
 
-  def _refresh_storage_cache(self, force: bool = False):
+  def _refresh_storage_state(self, force: bool = False):
     now = rl.get_time()
-    if self._storage_refresh_pending:
-      return
     if not force and (now - self._storage_updated_at) < 4.0:
       return
 
-    generation = self._storage_refresh_generation + 1
-    self._storage_refresh_generation = generation
-
-    def refresh_worker():
-      result: tuple[str, bool] | None = None
-      try:
-        result = self._calculate_storage_state()
-      finally:
-        if result is None:
-          self._storage_refresh_pending = False
-        else:
-          self._pending_storage_state = (generation, result[0], result[1])
-
-    self._storage_refresh_pending = True
+    cache = load_maps_storage_cache(self._worker_params.get(MAPS_STORAGE_CACHE_PARAM, encoding="utf-8") or "")
+    total_size = cache.storage_bytes
+    self._storage_known = cache.storage_known
+    self._has_downloaded_data = bool(cache.maps_present)
+    self._storage_text = _format_mb(total_size) if total_size is not None else tr("Calculating...")
     self._storage_updated_at = now
-    self._storage_refresh_thread = threading.Thread(target=refresh_worker, daemon=True)
-    self._storage_refresh_thread.start()
-
-  def _calculate_storage_state(self) -> tuple[str, bool]:
-    if not OFFLINE_MAPS_PATH.exists():
-      return "0 MB", False
-
-    total_size = 0
-    has_files = False
-    for path in OFFLINE_MAPS_PATH.rglob("*"):
-      try:
-        if not path.is_file():
-          continue
-        has_files = True
-        total_size += path.stat().st_size
-      except OSError:
-        continue
-    return _format_mb(total_size), has_files
 
   def _selected_tokens(self) -> set[str]:
     return self._cached_selected_tokens
@@ -837,6 +789,13 @@ class StarPilotMapsLayout(_SettingsPage):
     else:
       self._on_download()
 
+  def _schedule_action_label(self) -> str:
+    return {
+      "Manually": tr("Auto: Off"),
+      "Weekly": tr("Auto: Weekly"),
+      "Monthly": tr("Auto: Monthly"),
+    }[schedule_label(self._params.get("PreferredSchedule"))]
+
   def _on_schedule(self):
     localized_options = [(value, tr(label)) for value, label in MAP_SCHEDULE_LABELS.items()]
     options = [label for _, label in localized_options]
@@ -909,9 +868,9 @@ class StarPilotMapsLayout(_SettingsPage):
           if OFFLINE_MAPS_PATH.exists():
             shutil.rmtree(OFFLINE_MAPS_PATH, ignore_errors=True)
             OFFLINE_MAPS_PATH.mkdir(parents=True, exist_ok=True)
-          self._storage_refresh_generation += 1
-          self._pending_storage_state = (self._storage_refresh_generation, "0 MB", False)
-          self._storage_refresh_pending = False
+          cache = load_maps_storage_cache(self._worker_params.get(MAPS_STORAGE_CACHE_PARAM, encoding="utf-8") or "")
+          cache.clear()
+          self._worker_params.put(MAPS_STORAGE_CACHE_PARAM, cache.to_json())
           self._storage_updated_at = 0.0
 
         threading.Thread(target=remove_worker, daemon=True).start()
@@ -932,6 +891,8 @@ class StarPilotMapsLayout(_SettingsPage):
       return tr("Starting Download")
     if self._has_downloaded_data:
       return tr("Offline Maps")
+    if not self._storage_known:
+      return tr("Checking Offline Maps")
     if self._selected_count() == 0:
       return tr("Select Map Data")
     return tr("Download Readiness")

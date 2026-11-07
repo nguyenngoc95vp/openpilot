@@ -16,12 +16,12 @@ from cereal import car, custom, log
 from opendbc.car import gen_empty_fingerprint
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.chrysler.values import JEEPS as CHRYSLER_JEEPS
-from opendbc.car.gm.values import CAR as GM_CAR, EV_CAR as GM_EV_CAR, GMFlags
+from opendbc.car.gm.values import CAR as GM_CAR, EV_CAR as GM_EV_CAR, GM_AUTO_HOLD_CARS, GMFlags
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR, EV_CAR as HYUNDAI_EV_CAR, HyundaiFlags, HyundaiStarPilotSafetyFlags
 from opendbc.car.interfaces import TORQUE_SUBSTITUTE_PATH, CarInterfaceBase, GearShifter
 from opendbc.car.mock.values import CAR as MOCK
-from opendbc.car.subaru.values import SubaruFlags
-from opendbc.car.tesla.values import CAR as TESLA_CAR
+from opendbc.car.subaru.values import SUBARU_REDNECK_CRUISE_CARS, SUBARU_STOP_START_CARS, SubaruFlags
+from opendbc.car.tesla.values import CAR as TESLA_CAR, TeslaFlags
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR, ToyotaStarPilotFlags
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.constants import CV
@@ -30,10 +30,17 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import KP
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
+from openpilot.starpilot.common.lateral_only_experimental import lateral_only_experimental_available
+from openpilot.starpilot.common.longitudinal_mode import read_mode_values
 from openpilot.starpilot.common.accel_profile import (
   ACCELERATION_PROFILES,
+  A_CRUISE_MAX_BP_CUSTOM,
+  CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS,
+  CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY,
   CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
   CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY,
+  CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY,
+  CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS,
   CUSTOM_ACCEL_PROFILE_VALUE_MAX,
   CUSTOM_ACCEL_PROFILE_VALUE_MIN,
   DECELERATION_PROFILES,
@@ -41,6 +48,13 @@ from openpilot.starpilot.common.accel_profile import (
   custom_accel_profile_is_initialized,
   normalize_acceleration_profile,
   normalize_deceleration_profile,
+  parse_custom_accel_profile_curve,
+)
+from openpilot.starpilot.common.longitudinal_personality_profiles import (
+  PERSONALITY_PROFILES_PARAM,
+  is_truck_fingerprint,
+  load_personality_profile_enable_values,
+  migrate_profile_document,
 )
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.hardware.hw import Paths
@@ -61,6 +75,8 @@ THRESHOLD = 1 - 1 / math.e                # Requires the condition to be true fo
 
 NON_DRIVING_GEARS = [GearShifter.neutral, GearShifter.park, GearShifter.reverse, GearShifter.unknown]
 
+ALWAYS_ON_LATERAL_UNSUPPORTED_CAR_MAKES = frozenset({"volvo"})
+
 # Temporary fallback until the weather-compatible API is hosted locally.
 STARPILOT_API = os.getenv("STARPILOT_API", "https://frogpilot.com/api")
 
@@ -74,7 +90,7 @@ def _lkas_allowed_for_aol(car_make, cp_flags, fpcp_safety_configs) -> bool:
   hyundai_can_use_lkas_for_aol = car_make == "hyundai" and (
     bool(cp_flags & HyundaiFlags.CANFD) or hyundai_has_lda_button
   )
-  return hyundai_can_use_lkas_for_aol or car_make == "honda"
+  return hyundai_can_use_lkas_for_aol or car_make in ("ford", "honda")
 
 
 def _main_cruise_aol_allowed(button_control: float) -> bool:
@@ -145,8 +161,6 @@ BACKUP_PATH = _FP_CACHE_ROOT / "on_backup"
 STARPILOT_BACKUPS = _FP_DATA_ROOT / "backups"
 TOGGLE_BACKUPS = _FP_DATA_ROOT / "toggle_backups"
 
-FROGS_GO_MOO_PATH = _FP_PERSIST_ROOT / "frogsgomoo.py"
-
 HD_LOGS_PATH = _FP_DATA_ROOT / "media/0/realdata_HD"
 HD_PATH = _FP_CACHE_ROOT / "use_HD"
 
@@ -183,6 +197,8 @@ CANCEL_BUTTON_MAPPINGS = (
 )
 
 AOL_LKAS_MIGRATION_KEY = "AOLLKASMigratedToButtonControl"
+FORD_LKAS_MIGRATION_KEY = "FordLKASButtonControlMigrated"
+SONATA_HYBRID_LKAS_MIGRATION_KEY = "SonataHybridLKASButtonControlMigrated"
 
 
 def sync_reboot_marker(marker_path: Path, enabled: bool, params: Params) -> bool:
@@ -328,6 +344,11 @@ def default_ev_tuning_enabled(CP):
   ev_vehicle |= getattr(CP, "transmissionType", None) == car.CarParams.TransmissionType.direct
   return bool(ev_vehicle)
 
+
+def always_on_lateral_available(CP) -> bool:
+  return getattr(CP, "brand", None) not in ALWAYS_ON_LATERAL_UNSUPPORTED_CAR_MAKES
+
+
 def get_starpilot_toggles(sm=messaging.SubMaster(["starpilotPlan"]), *, read_persisted_force_params=False):
   toggles_text = sm["starpilotPlan"].starpilotToggles
   if toggles_text:
@@ -377,6 +398,16 @@ def speed_limit_controller_available(openpilot_longitudinal: bool, redneck_cruis
   return openpilot_longitudinal or redneck_cruise
 
 
+def software_cruise_intervals_available(quality_of_life: bool, car_make: str, pcm_cruise: bool,
+                                        openpilot_longitudinal: bool, pcm_cruise_speed: bool) -> bool:
+  return bool(quality_of_life and not (car_make == "toyota" and pcm_cruise) and
+              (openpilot_longitudinal or not pcm_cruise_speed))
+
+
+def reverse_cruise_available(quality_of_life: bool, car_make: str, pcm_cruise: bool) -> bool:
+  return bool(quality_of_life and car_make == "toyota" and pcm_cruise)
+
+
 def migrate_cancel_button_controls(params: Params | None = None) -> bool:
   params = params or Params(return_defaults=True)
   if params.get_bool(CANCEL_BUTTON_MIGRATION_KEY) or not params.get_bool("RemapCancelToDistance"):
@@ -401,6 +432,30 @@ def migrate_aol_lkas_to_button_control(params: Params | None = None) -> bool:
   return True
 
 
+def migrate_ford_lkas_button_default(car_make: str, params: Params | None = None) -> bool:
+  params = params or Params(return_defaults=True)
+  if car_make != "ford" or params.get_bool(FORD_LKAS_MIGRATION_KEY):
+    return False
+
+  if params.get_int("LKASButtonControl") == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]:
+    params.put_int("LKASButtonControl", BUTTON_FUNCTIONS["AOL_TOGGLE"])
+
+  params.put_bool(FORD_LKAS_MIGRATION_KEY, True)
+  return True
+
+
+def migrate_sonata_hybrid_lkas_button_default(car_model: str, params: Params | None = None) -> bool:
+  params = params or Params(return_defaults=True)
+  if car_model != HYUNDAI_CAR.HYUNDAI_SONATA_HYBRID or params.get_bool(SONATA_HYBRID_LKAS_MIGRATION_KEY):
+    return False
+
+  if params.get_int("LKASButtonControl") == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]:
+    params.put_int("LKASButtonControl", BUTTON_FUNCTIONS["AOL_TOGGLE"])
+
+  params.put_bool(SONATA_HYBRID_LKAS_MIGRATION_KEY, True)
+  return True
+
+
 class StarPilotVariables:
   def __init__(self):
     self.params = Params(return_defaults=True)
@@ -419,7 +474,6 @@ class StarPilotVariables:
     self.testing_branch = branch == "StarPilot-Testing"
     self.vetting_branch = branch == "StarPilot-Vetting"
 
-    self.frogs_go_moo = FROGS_GO_MOO_PATH.is_file()
     # Development/vetting branches are no longer gated into dashcam mode.
     toggle.block_user = False
 
@@ -583,9 +637,20 @@ class StarPilotVariables:
 
   def update(self, holiday_theme="stock", started=False, clear_update_flag=True):
     toggle = self.starpilot_toggles
+    try:
+      mode_values = read_mode_values(self.params)
+    except OSError:
+      self.params_memory.put_bool("StarPilotTogglesUpdated", True)
+      if hasattr(toggle, "longitudinal_mode_values"):
+        return
+      mode_values = {"ExperimentalMode": False, "ConditionalChill": False, "ConditionalExperimental": False}
+      clear_update_flag = False
     # CarParams uses this value to select the matching Panda safety configuration.
     toggle.tesla_cooperative_steering = self.params.get_bool("TeslaCoopSteering")
+    toggle.tesla_aol_screen_tap_requested = self.params.get_bool("TeslaAOLScreenTap") and self.params.get_bool("AlwaysOnLateral")
+    toggle.tesla_aol_screen_brake_disengage_requested = self.params.get_bool("TeslaAOLDisengageOnBrake")
     toggle.rivian_angle_control = self.params.get_bool("RivianAngleControl")
+    toggle.toyota_radar_mode_requested = self.params.get_int("ToyotaRadarMode")
 
     fallback_platform = GM_CAR.CHEVROLET_BOLT_ACC_2022_2023 if HARDWARE.get_device_type() == "pc" else MOCK.MOCK
 
@@ -611,7 +676,9 @@ class StarPilotVariables:
 
     alpha_longitudinal = CP.alphaLongitudinalAvailable
     toggle.car_make = CP.brand
+    migrate_ford_lkas_button_default(toggle.car_make, self.params)
     toggle.car_model = CP.carFingerprint
+    migrate_sonata_hybrid_lkas_button_default(toggle.car_model, self.params)
     toggle.disable_openpilot_long = self.get_value("DisableOpenpilotLongitudinal", condition=not alpha_longitudinal)
     friction = CP.lateralTuning.torque.friction
     if not math.isfinite(friction):
@@ -636,14 +703,27 @@ class StarPilotVariables:
     hyundai_can_use_lkas_for_aol = toggle.car_make == "hyundai" and toggle.lkas_allowed_for_aol
     longitudinalActuatorDelay = CP.longitudinalActuatorDelay
     toggle.openpilot_longitudinal = CP.openpilotLongitudinalControl and not toggle.disable_openpilot_long
-    if not toggle.redneck_cruise_available or (toggle.openpilot_longitudinal and FPCP.pcmCruiseSpeed):
+    toggle.experimental_mode_available = (
+      toggle.openpilot_longitudinal or lateral_only_experimental_available(CP)
+    )
+    hyundai_redneck_available = toggle.car_make == "hyundai" and toggle.redneck_cruise_available
+    if toggle.car_make == "hyundai" and (not toggle.redneck_cruise_available or
+                                          (toggle.openpilot_longitudinal and FPCP.pcmCruiseSpeed)):
       self.params.put_bool("RedneckCruise", False)
     toggle.redneck_cruise = self.get_value(
       "RedneckCruise",
-      condition=toggle.redneck_cruise_available and not toggle.openpilot_longitudinal,
+      condition=hyundai_redneck_available and not toggle.openpilot_longitudinal,
     )
-    if toggle.redneck_cruise_available and not FPCP.pcmCruiseSpeed:
+    if hyundai_redneck_available and not FPCP.pcmCruiseSpeed:
       toggle.redneck_cruise = True
+
+    toggle.subaru_redneck_cruise = self.get_value(
+      "SubaruRedneckCruise", condition=toggle.car_model in SUBARU_REDNECK_CRUISE_CARS,
+    )
+    if toggle.car_model in SUBARU_REDNECK_CRUISE_CARS and not FPCP.pcmCruiseSpeed:
+      toggle.subaru_redneck_cruise = True
+    if toggle.car_make == "subaru":
+      toggle.redneck_cruise = bool(toggle.subaru_redneck_cruise and not FPCP.pcmCruiseSpeed)
     pcm_cruise = CP.pcmCruise
     prohibited_main_aol = not toggle.openpilot_longitudinal and hyundai_can_use_lkas_for_aol
     startAccel = CP.startAccel
@@ -697,7 +777,7 @@ class StarPilotVariables:
     toggle.hide_distance_profile_banner = self.get_value("HideDistanceProfileBanner", condition=advanced_custom_ui and not toggle.debug_mode)
     toggle.hide_turning_banner = self.get_value("HideTurningBanner", condition=advanced_custom_ui and not toggle.debug_mode)
     toggle.hide_dm_icon = self.get_value("HideDMIcon", condition=advanced_custom_ui) and not toggle.debug_mode
-    toggle.hide_lead_marker = self.get_value("HideLeadMarker", condition=advanced_custom_ui and toggle.openpilot_longitudinal and not toggle.debug_mode)
+    toggle.hide_lead_marker = self.get_value("HideLeadMarker", condition=advanced_custom_ui and not toggle.debug_mode)
     toggle.hide_max_speed = self.get_value("HideMaxSpeed", condition=advanced_custom_ui and not toggle.debug_mode)
     toggle.hide_speed = self.get_value("HideSpeed", condition=advanced_custom_ui and not toggle.debug_mode)
     toggle.hide_speed_limit = self.get_value("HideSpeedLimit", condition=advanced_custom_ui and not toggle.debug_mode)
@@ -759,6 +839,10 @@ class StarPilotVariables:
     # Seed powertrain-based defaults once, but always honor persisted user overrides.
     toggle.ev_tuning = ev_tuning_param
     toggle.truck_tuning = truck_tuning_param
+    toggle.personality_ev_tuning = bool(ev_vehicle)
+    toggle.personality_truck_tuning = (
+      is_truck_fingerprint(CP.carFingerprint) or truck_tuning_param
+    ) and not toggle.personality_ev_tuning
     toggle.trailer_load_kg = self.get_value("TrailerLoad", cast=float, condition=advanced_longitudinal_tuning,
                                             default=0.0, conversion=CV.LB_TO_KG, min=0, max=15000 * CV.LB_TO_KG)
     toggle.longitudinalActuatorDelay = self.get_value("LongitudinalActuatorDelay", cast=float, condition=advanced_longitudinal_tuning, default=longitudinalActuatorDelay, min=0, max=1)
@@ -771,6 +855,14 @@ class StarPilotVariables:
 
     toggle.alert_volume_controller = self.get_value("AlertVolumeControl")
     toggle.below_steer_speed_volume = self.get_value("BelowSteerSpeedVolume", cast=float, condition=toggle.alert_volume_controller)
+    toggle.turn_steering_limit_mute_speed = self.get_value(
+      "TurnSteeringLimitMuteSpeed",
+      cast=float,
+      condition=self.params.get_bool("GalaxyDeveloperMode"),
+      conversion=speed_conversion,
+      min=0,
+      max=99 * speed_conversion,
+    )
     toggle.switchback_mode_cooldown = self.get_value("SwitchbackModeCooldown", cast=float, conversion=60, min=0, max=1800)
     toggle.disengage_volume = self.get_value("DisengageVolume", cast=float, condition=toggle.alert_volume_controller)
     toggle.engage_volume = self.get_value("EngageVolume", cast=float, condition=toggle.alert_volume_controller)
@@ -780,11 +872,21 @@ class StarPilotVariables:
     toggle.warningSoft_volume = self.get_value("WarningSoftVolume", cast=float, condition=toggle.alert_volume_controller)
     toggle.warningImmediate_volume = max(self.get_value("WarningImmediateVolume", cast=float, condition=toggle.alert_volume_controller, default=25), 25)
 
-    toggle.always_on_lateral = self.get_value("AlwaysOnLateral")
+    toggle.always_on_lateral = self.get_value("AlwaysOnLateral") and always_on_lateral_available(CP)
     lkas_button_assigned_to_aol = self.get_button_function("LKASButtonControl") == BUTTON_FUNCTIONS["AOL_TOGGLE"]
-    toggle.always_on_lateral_lkas = toggle.always_on_lateral and toggle.lkas_allowed_for_aol and lkas_button_assigned_to_aol
+    toggle.ford_lkas_aol_toggle = toggle.car_make == "ford" and lkas_button_assigned_to_aol
+    toggle.always_on_lateral_lkas = (
+      toggle.always_on_lateral and toggle.lkas_allowed_for_aol and lkas_button_assigned_to_aol and not toggle.ford_lkas_aol_toggle
+    )
     toggle.always_on_lateral_main = toggle.always_on_lateral and not prohibited_main_aol
     toggle.always_on_lateral_pause_speed = self.get_value("PauseAOLOnBrake", cast=float, condition=toggle.always_on_lateral)
+    toggle.tesla_aol_disengage_on_brake = self.get_value(
+      "TeslaAOLDisengageOnBrake", condition=toggle.always_on_lateral and toggle.car_make == "tesla"
+    )
+    toggle.tesla_aol_screen_tap = self.get_value(
+      "TeslaAOLScreenTap", condition=toggle.always_on_lateral and toggle.car_make == "tesla" and
+      toggle.car_model in (TESLA_CAR.TESLA_MODEL_3, TESLA_CAR.TESLA_MODEL_Y) and bool(CP.flags & TeslaFlags.AOL_SCREEN_BUTTON),
+    )
 
     main_cruise_button_control = self.get_button_function("MainCruiseButtonControl")
     toggle.main_cruise_aol_toggle = _main_cruise_aol_allowed(main_cruise_button_control)
@@ -803,10 +905,12 @@ class StarPilotVariables:
       toggle.car_model = car_model
 
     self.migrate_prius_cluster_offset(str(toggle.car_model))
-    toggle.cluster_offset = self.get_value("ClusterOffset", cast=float, condition=toggle.car_make == "toyota")
+    toggle.cluster_offset = self.get_value("ClusterOffset", cast=float)
 
-    toggle.conditional_experimental_mode = toggle.openpilot_longitudinal and self.get_value("ConditionalExperimental")
-    toggle.conditional_chill_mode = toggle.openpilot_longitudinal and not toggle.conditional_experimental_mode and self.get_value("ConditionalChill")
+    toggle.longitudinal_mode_values = mode_values
+    toggle.experimental_mode = toggle.experimental_mode_available and not toggle.safe_mode and mode_values["ExperimentalMode"]
+    toggle.conditional_experimental_mode = toggle.openpilot_longitudinal and not toggle.safe_mode and mode_values["ConditionalExperimental"]
+    toggle.conditional_chill_mode = toggle.openpilot_longitudinal and not toggle.safe_mode and not toggle.conditional_experimental_mode and mode_values["ConditionalChill"]
     toggle.conditional_curves = self.get_value("CECurves", condition=toggle.conditional_experimental_mode)
     toggle.conditional_curves_lead = self.get_value("CECurvesLead", condition=toggle.conditional_curves)
     toggle.conditional_lead = self.get_value("CELead", condition=toggle.conditional_experimental_mode)
@@ -843,6 +947,10 @@ class StarPilotVariables:
     toggle.speed_limit_changed_alert = self.get_value("SpeedLimitChangedAlert")
 
     toggle.custom_personalities = toggle.openpilot_longitudinal and self.get_value("CustomPersonalities")
+    for runtime_key, enabled in load_personality_profile_enable_values(self.get_value).items():
+      setattr(toggle, runtime_key, enabled)
+    profile_settings_raw = self.params_raw.get(PERSONALITY_PROFILES_PARAM)
+    toggle.longitudinal_personality_profiles = migrate_profile_document(profile_settings_raw) or {}
     toggle.aggressive_jerk_acceleration = self.get_value("AggressiveJerkAcceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.aggressive_jerk_deceleration = self.get_value("AggressiveJerkDeceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.aggressive_jerk_danger = self.get_value("AggressiveJerkDanger", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
@@ -888,7 +996,7 @@ class StarPilotVariables:
     toggle.distance_icons = self.get_value("DistanceIconPack", cast=None, condition=custom_themes, default="stock")
     toggle.icon_pack = self.get_value("IconPack", cast=None, condition=custom_themes, default="stock")
     toggle.signal_icons = self.get_value("SignalAnimation", cast=None, condition=custom_themes, default="stock")
-    toggle.sound_pack = self.get_value("SoundPack", cast=None, condition=custom_themes, default="stock")
+    toggle.sound_pack = "stock"
     toggle.random_themes = self.get_value("RandomThemes", condition=custom_themes)
     toggle.random_themes_holidays = self.get_value("RandomThemesHolidays", condition=toggle.random_themes)
     if toggle.random_themes:
@@ -906,7 +1014,8 @@ class StarPilotVariables:
     toggle.static_pedals_on_ui = self.get_value("StaticPedalsOnUI", condition=toggle.pedals_on_ui)
     toggle.rotating_wheel = self.get_value("RotatingWheel", condition=custom_ui)
 
-    toggle.developer_ui = self.get_value("DeveloperUI")
+    big_ui = os.getenv("BIG", "0") == "1" or HARDWARE.get_device_type() in ("tici", "tizi")
+    toggle.developer_ui = self.get_value("DeveloperUI") or big_ui
     developer_metrics = self.get_value("DeveloperMetrics", condition=toggle.developer_ui)
     border_metrics = self.get_value("BorderMetrics", condition=developer_metrics)
     toggle.blind_spot_metrics = has_bsm and self.get_value("BlindSpotMetrics", condition=border_metrics)
@@ -935,7 +1044,7 @@ class StarPilotVariables:
     developer_widgets = self.get_value("DeveloperWidgets", condition=toggle.developer_ui)
     toggle.adjacent_lead_tracking = has_radar and (self.get_value("AdjacentLeadsUI", condition=developer_widgets) or toggle.debug_mode)
     toggle.radar_tracks = has_radar and (self.get_value("RadarTracksUI", condition=developer_widgets) or toggle.debug_mode)
-    toggle.show_stopping_point = toggle.openpilot_longitudinal and (self.get_value("ShowStoppingPoint", condition=developer_widgets) or toggle.debug_mode)
+    toggle.show_stopping_point = self.get_value("ShowStoppingPoint", condition=developer_widgets) or toggle.debug_mode
     toggle.show_stopping_point_metrics = self.get_value("ShowStoppingPointMetrics", condition=toggle.show_stopping_point) or toggle.debug_mode
 
     device_management = self.get_value("DeviceManagement")
@@ -946,6 +1055,7 @@ class StarPilotVariables:
     )
     toggle.device_shutdown_time = device_shutdown_seconds(device_shutdown_hours)
     toggle.increase_thermal_limits = self.get_value("IncreaseThermalLimits", condition=device_management)
+    toggle.aggressive_cooling = self.get_value("AggressiveCoolingEnabled", condition=device_management)
     toggle.low_voltage_shutdown = self.get_value("LowVoltageShutdown", cast=float, condition=device_management, min=VBATT_PAUSE_CHARGING, max=12.5)
     # Keep force-onroad desktop simulations from polluting logs, but never disable
     # loggerd/encoderd on real devices because that breaks route continuity/uploads.
@@ -959,7 +1069,7 @@ class StarPilotVariables:
       condition=toggle.car_make == "gm" and toggle.has_pedal and "BOLT" in toggle.car_model,
     )
 
-    developer_feature_access = self.params.get_bool("DeveloperUI") or self.params.get_bool("GalaxyDeveloperMode")
+    developer_feature_access = toggle.developer_ui or self.params.get_bool("GalaxyDeveloperMode")
     toggle.pulse_and_glide_available = toggle.openpilot_longitudinal and developer_feature_access
     toggle.pulse_glide_speed_delta = self.get_value(
       "PulseGlideSpeedDelta",
@@ -971,7 +1081,9 @@ class StarPilotVariables:
     )
 
     distance_button_control = self.get_button_function("DistanceButtonControl")
-    toggle.experimental_mode_via_distance = toggle.openpilot_longitudinal and distance_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_distance = (
+      toggle.experimental_mode_available and distance_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press = toggle.experimental_mode_via_distance
     toggle.force_coast_via_distance = toggle.openpilot_longitudinal and distance_button_control == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_distance = toggle.pulse_and_glide_available and distance_button_control == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -984,7 +1096,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "distance", distance_button_control)
 
     distance_button_control_long = self.get_button_function("LongDistanceButtonControl")
-    toggle.experimental_mode_via_distance_long = toggle.openpilot_longitudinal and distance_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_distance_long = (
+      toggle.experimental_mode_available and distance_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_distance_long
     toggle.force_coast_via_distance_long = toggle.openpilot_longitudinal and distance_button_control_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_distance_long = toggle.pulse_and_glide_available and distance_button_control_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -997,7 +1111,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "distance_long", distance_button_control_long)
 
     distance_button_control_very_long = self.get_button_function("VeryLongDistanceButtonControl")
-    toggle.experimental_mode_via_distance_very_long = toggle.openpilot_longitudinal and distance_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_distance_very_long = (
+      toggle.experimental_mode_available and distance_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_distance_very_long
     toggle.force_coast_via_distance_very_long = toggle.openpilot_longitudinal and distance_button_control_very_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_distance_very_long = toggle.pulse_and_glide_available and distance_button_control_very_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1010,7 +1126,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "distance_very_long", distance_button_control_very_long)
 
     cancel_button_control = self.get_button_function("CancelButtonControl", condition=toggle.remap_cancel_to_distance)
-    toggle.experimental_mode_via_cancel = toggle.openpilot_longitudinal and cancel_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_cancel = (
+      toggle.experimental_mode_available and cancel_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_cancel
     toggle.force_coast_via_cancel = toggle.openpilot_longitudinal and cancel_button_control == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_cancel = toggle.pulse_and_glide_available and cancel_button_control == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1023,7 +1141,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "cancel", cancel_button_control)
 
     cancel_button_control_long = self.get_button_function("LongCancelButtonControl", condition=toggle.remap_cancel_to_distance)
-    toggle.experimental_mode_via_cancel_long = toggle.openpilot_longitudinal and cancel_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_cancel_long = (
+      toggle.experimental_mode_available and cancel_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_cancel_long
     toggle.force_coast_via_cancel_long = toggle.openpilot_longitudinal and cancel_button_control_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_cancel_long = toggle.pulse_and_glide_available and cancel_button_control_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1036,7 +1156,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "cancel_long", cancel_button_control_long)
 
     cancel_button_control_very_long = self.get_button_function("VeryLongCancelButtonControl", condition=toggle.remap_cancel_to_distance)
-    toggle.experimental_mode_via_cancel_very_long = toggle.openpilot_longitudinal and cancel_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_cancel_very_long = (
+      toggle.experimental_mode_available and cancel_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_cancel_very_long
     toggle.force_coast_via_cancel_very_long = toggle.openpilot_longitudinal and cancel_button_control_very_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_cancel_very_long = toggle.pulse_and_glide_available and cancel_button_control_very_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1055,7 +1177,6 @@ class StarPilotVariables:
       toggle.distance_icons = toggle.current_holiday_theme
       toggle.icon_pack = toggle.current_holiday_theme
       toggle.signal_icons = toggle.current_holiday_theme
-      toggle.sound_pack = toggle.current_holiday_theme
       toggle.wheel_image = toggle.current_holiday_theme
 
     toggle.lane_changes = self.get_value("LaneChanges")
@@ -1093,7 +1214,9 @@ class StarPilotVariables:
     toggle.use_turn_desires = self.get_value("TurnDesires", condition=lateral_tuning)
 
     lkas_button_control = self.get_button_function("LKASButtonControl", condition=toggle.car_make != "subaru")
-    toggle.experimental_mode_via_lkas = toggle.openpilot_longitudinal and lkas_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_lkas = (
+      toggle.experimental_mode_available and lkas_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_lkas
     toggle.force_coast_via_lkas = toggle.openpilot_longitudinal and lkas_button_control == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_lkas = toggle.pulse_and_glide_available and lkas_button_control == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1107,7 +1230,9 @@ class StarPilotVariables:
 
     has_canfd_media_buttons = toggle.car_make == "hyundai" and bool(CP.flags & HyundaiFlags.CANFD)
     mode_button_control = self.get_button_function("ModeButtonControl", condition=has_canfd_media_buttons)
-    toggle.experimental_mode_via_mode = toggle.openpilot_longitudinal and mode_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_mode = (
+      toggle.experimental_mode_available and mode_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_mode
     toggle.force_coast_via_mode = toggle.openpilot_longitudinal and mode_button_control == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_mode = toggle.pulse_and_glide_available and mode_button_control == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1120,7 +1245,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "mode", mode_button_control)
 
     mode_button_control_long = self.get_button_function("LongModeButtonControl", condition=has_canfd_media_buttons)
-    toggle.experimental_mode_via_mode_long = toggle.openpilot_longitudinal and mode_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_mode_long = (
+      toggle.experimental_mode_available and mode_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_mode_long
     toggle.force_coast_via_mode_long = toggle.openpilot_longitudinal and mode_button_control_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_mode_long = toggle.pulse_and_glide_available and mode_button_control_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1133,7 +1260,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "mode_long", mode_button_control_long)
 
     mode_button_control_very_long = self.get_button_function("VeryLongModeButtonControl", condition=has_canfd_media_buttons)
-    toggle.experimental_mode_via_mode_very_long = toggle.openpilot_longitudinal and mode_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_mode_very_long = (
+      toggle.experimental_mode_available and mode_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_mode_very_long
     toggle.force_coast_via_mode_very_long = toggle.openpilot_longitudinal and mode_button_control_very_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_mode_very_long = toggle.pulse_and_glide_available and mode_button_control_very_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1146,7 +1275,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "mode_very_long", mode_button_control_very_long)
 
     star_button_control = self.get_button_function("StarButtonControl", condition=has_canfd_media_buttons)
-    toggle.experimental_mode_via_star = toggle.openpilot_longitudinal and star_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_star = (
+      toggle.experimental_mode_available and star_button_control == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_star
     toggle.force_coast_via_star = toggle.openpilot_longitudinal and star_button_control == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_star = toggle.pulse_and_glide_available and star_button_control == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1159,7 +1290,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "star", star_button_control)
 
     star_button_control_long = self.get_button_function("LongStarButtonControl", condition=has_canfd_media_buttons)
-    toggle.experimental_mode_via_star_long = toggle.openpilot_longitudinal and star_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_star_long = (
+      toggle.experimental_mode_available and star_button_control_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_star_long
     toggle.force_coast_via_star_long = toggle.openpilot_longitudinal and star_button_control_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_star_long = toggle.pulse_and_glide_available and star_button_control_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1172,7 +1305,9 @@ class StarPilotVariables:
     self.set_favorite_button_flags(toggle, "star_long", star_button_control_long)
 
     star_button_control_very_long = self.get_button_function("VeryLongStarButtonControl", condition=has_canfd_media_buttons)
-    toggle.experimental_mode_via_star_very_long = toggle.openpilot_longitudinal and star_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    toggle.experimental_mode_via_star_very_long = (
+      toggle.experimental_mode_available and star_button_control_very_long == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+    )
     toggle.experimental_mode_via_press |= toggle.experimental_mode_via_star_very_long
     toggle.force_coast_via_star_very_long = toggle.openpilot_longitudinal and star_button_control_very_long == BUTTON_FUNCTIONS["FORCE_COAST"]
     toggle.pulse_and_glide_via_star_very_long = toggle.pulse_and_glide_available and star_button_control_very_long == BUTTON_FUNCTIONS["PULSE_AND_GLIDE"]
@@ -1211,6 +1346,18 @@ class StarPilotVariables:
       ]
     else:
       toggle.custom_accel_profile_values = [custom_accel_defaults[key] for key in CUSTOM_ACCEL_PROFILE_PARAM_KEYS]
+    toggle.custom_accel_profile_breakpoints = list(A_CRUISE_MAX_BP_CUSTOM)
+    if self.get_value(CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY):
+      try:
+        custom_breakpoints, custom_values = parse_custom_accel_profile_curve(
+          self.params_raw.get(CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY),
+          [self.params_raw.get(key) for key in CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS],
+          [self.params_raw.get(key) for key in CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS],
+        )
+        toggle.custom_accel_profile_breakpoints = custom_breakpoints
+        toggle.custom_accel_profile_values = custom_values
+      except ValueError:
+        pass
     toggle.human_lane_changes = has_radar and self.get_value("HumanLaneChanges", condition=longitudinal_tuning)
     toggle.nav_longitudinal_allowed = toggle.openpilot_longitudinal and self.get_value("NavLongitudinalAllowed", condition=longitudinal_tuning)
     # Keep lead detection sensitivity normalized even when longitudinal tuning is disabled.
@@ -1259,10 +1406,17 @@ class StarPilotVariables:
     toggle.pause_lateral_below_signal = self.get_value("PauseLateralOnSignal", condition=toggle.pause_lateral_below_speed != 0)
     toggle.pause_lateral_signal_delay = self.get_value("LateralResumeDelay", cast=float, condition=toggle.pause_lateral_below_signal, default=0.0, min=0.0, max=5.0)
 
-    quality_of_life_longitudinal = toggle.openpilot_longitudinal and self.get_value("QOLLongitudinal")
-    quality_of_life_cruise = self.get_value("QOLLongitudinal") and (toggle.openpilot_longitudinal or not FPCP.pcmCruiseSpeed)
+    quality_of_life = self.get_value("QOLLongitudinal")
+    quality_of_life_longitudinal = toggle.openpilot_longitudinal and quality_of_life
+    quality_of_life_cruise = software_cruise_intervals_available(
+      quality_of_life, toggle.car_make, pcm_cruise, toggle.openpilot_longitudinal, FPCP.pcmCruiseSpeed,
+    )
     toggle.cruise_increase = self.get_value("CustomCruise", cast=float, condition=quality_of_life_cruise, default=1.0)
     toggle.cruise_increase_long = self.get_value("CustomCruiseLong", cast=float, condition=quality_of_life_cruise, default=5.0)
+    toggle.reverse_cruise_increase = self.get_value(
+      "ReverseCruise",
+      condition=reverse_cruise_available(quality_of_life, toggle.car_make, pcm_cruise),
+    )
     toggle.force_stops = self.get_value("ForceStops", condition=quality_of_life_longitudinal)
     toggle.force_stop_distance_offset = self.get_value("ForceStopDistanceOffset", cast=int, condition=(quality_of_life_longitudinal and toggle.force_stops))
     toggle.force_standstill = self.get_value("ForceStandstill", condition=quality_of_life_longitudinal)
@@ -1271,7 +1425,6 @@ class StarPilotVariables:
     map_gears = self.get_value("MapGears", condition=quality_of_life_longitudinal)
     toggle.map_acceleration = self.get_value("MapAcceleration", condition=map_gears)
     toggle.map_deceleration = self.get_value("MapDeceleration", condition=map_gears)
-    toggle.reverse_cruise_increase = self.get_value("ReverseCruise", condition=quality_of_life_cruise)
     toggle.set_speed_offset = self.get_value("SetSpeedOffset", cast=float, condition=(quality_of_life_longitudinal and not pcm_cruise), conversion=(1 if toggle.is_metric else CV.MPH_TO_KPH))
     toggle.weather_presets = self.get_value("WeatherPresets", condition=quality_of_life_longitudinal)
     toggle.increase_following_distance_low_visibility = self.get_value("IncreaseFollowingLowVisibility", cast=float, condition=toggle.weather_presets)
@@ -1304,7 +1457,7 @@ class StarPilotVariables:
 
     screen_management = self.get_value("ScreenManagement")
     toggle.screen_brightness = max(self.get_value("ScreenBrightness", cast=float, condition=screen_management), 1)
-    toggle.screen_brightness_onroad = self.get_value("ScreenBrightnessOnroad", cast=float, condition=(screen_management and not toggle.force_onroad), min=1)
+    toggle.screen_brightness_onroad = self.get_value("ScreenBrightnessOnroad", cast=float, condition=(screen_management and not toggle.force_onroad), min=0)
     toggle.screen_recorder = self.get_value("ScreenRecorder", condition=screen_management) or toggle.debug_mode
     toggle.screen_timeout = self.get_value("ScreenTimeout", cast=float, condition=screen_management)
     toggle.screen_timeout_onroad = self.get_value("ScreenTimeoutOnroad", cast=float, condition=screen_management)
@@ -1329,6 +1482,8 @@ class StarPilotVariables:
     speed_limit_confirmation = self.get_value("SLCConfirmation", condition=toggle.speed_limit_controller)
     toggle.speed_limit_confirmation_higher = self.get_value("SLCConfirmationHigher", condition=speed_limit_confirmation)
     toggle.speed_limit_confirmation_lower = self.get_value("SLCConfirmationLower", condition=speed_limit_confirmation)
+    # Legacy setting is hidden in the current UI. SLC's pedal and +/- overrides
+    # remain available regardless of its saved value; keep loading it for compatibility.
     slc_override_method = self.get_value("SLCOverride", cast=float, condition=toggle.speed_limit_controller)
     toggle.speed_limit_controller_override_manual = slc_override_method == 1
     toggle.speed_limit_controller_override_set_speed = slc_override_method == 2
@@ -1365,8 +1520,6 @@ class StarPilotVariables:
     toggle.startup_alert_bottom = self.get_value("StartupMessageBottom", cast=str, default="")
 
     if toggle.simple_mode:
-      toggle.alert_volume_controller = False
-
       toggle.color_scheme = "stock"
       toggle.current_holiday_theme = "stock"
       toggle.holiday_themes = False
@@ -1459,7 +1612,10 @@ class StarPilotVariables:
     toggle.subaru_sng = self.get_value("SubaruSNG", condition=toggle.car_make == "subaru" and
                                        not (CP.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID | SubaruFlags.LKAS_ANGLE)))
     toggle.subaru_sng_manual_parking_brake = self.get_value("SubaruSNGManualParkingBrake", condition=toggle.subaru_sng)
-
+    toggle.subaru_stop_start_off = self.get_value(
+      "SubaruStopStartOff", condition=toggle.car_model in SUBARU_STOP_START_CARS,
+    )
+    toggle.subaru_avh_on = self.get_value("SubaruAvhStartup", condition=toggle.car_model == "SUBARU_LEGACY_2025")
     toggle.jeep_brake_hold = self.get_value(
       "JeepBrakeHold",
       condition=toggle.car_make == "chrysler" and toggle.car_model in CHRYSLER_JEEPS,
@@ -1468,6 +1624,10 @@ class StarPilotVariables:
     toggle.tesla_cooperative_steering = self.get_value(
       "TeslaCoopSteering",
       condition=toggle.car_make == "tesla" and toggle.car_model == TESLA_CAR.TESLA_MODEL_3,
+    )
+    toggle.tesla_wake_on_can = self.get_value(
+      "TeslaWakeOnCAN",
+      condition=toggle.car_make == "tesla" and toggle.car_model in {TESLA_CAR.TESLA_MODEL_3, TESLA_CAR.TESLA_MODEL_Y, TESLA_CAR.TESLA_MODEL_X},
     )
     toggle.rivian_angle_control = self.get_value("RivianAngleControl", condition=toggle.car_make == "rivian")
 
@@ -1496,9 +1656,9 @@ class StarPilotVariables:
     )
     toggle.remote_start_boots_comma = self.get_value("RemoteStartBootsComma", condition=toggle.car_make == "gm")
 
-    gm_auto_hold_supported = toggle.car_model in LEGACY_VOLT_STOCK_ACC_CARS
+    gm_auto_hold_supported = toggle.car_model in GM_AUTO_HOLD_CARS
     toggle.gm_auto_hold = self.get_value("GMAutoHold", condition=gm_auto_hold_supported)
-    toggle.volt_one_pedal_mode = self.get_value("VoltOnePedalMode", condition=gm_auto_hold_supported)
+    toggle.volt_one_pedal_mode = self.get_value("VoltOnePedalMode", condition=toggle.car_model in LEGACY_VOLT_STOCK_ACC_CARS)
 
     toggle.volt_sng = self.get_value("VoltSNG", condition=toggle.car_model in LEGACY_VOLT_STOCK_ACC_CARS)
 

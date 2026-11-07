@@ -21,11 +21,15 @@ fi
 export QCOM_PRIORITY=12
 
 if [ -z "$AGNOS_VERSION" ]; then
+<<<<<<< HEAD
   export AGNOS_VERSION="19.6.10"
+=======
+  export AGNOS_VERSION="19.8.1"
+>>>>>>> upstream/StarPilot
 fi
 
 if [ -z "$AGNOS_ACCEPTED_VERSIONS" ]; then
-  export AGNOS_ACCEPTED_VERSIONS="$AGNOS_VERSION"
+  export AGNOS_ACCEPTED_VERSIONS="19.8.1 19.8.2 20.2-starpilot.1"
 fi
 
 export STAGING_ROOT="/data/safe_staging"

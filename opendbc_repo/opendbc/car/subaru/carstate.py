@@ -1,11 +1,20 @@
 import copy
 from cereal import custom
 from opendbc.can import CANDefine, CANParser
-from opendbc.car import Bus, structs
+from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.subaru.values import DBC, CanBus, SubaruFlags
+from opendbc.car.subaru.values import CAR, DBC, CanBus, SUBARU_REDNECK_CRUISE_CARS, SUBARU_STOP_START_CARS, SubaruFlags
 from opendbc.car import CanSignalRateCalculator
+from opendbc.car.subaru.avh import INPUTS as AVH_INPUTS
+
+ButtonType = structs.CarState.ButtonEvent.Type
+
+SUBARU_CRUISE_BUTTONS = {
+  "Main": ButtonType.mainCruise,
+  "Set": ButtonType.decelCruise,
+  "Resume": ButtonType.accelCruise,
+}
 
 
 class CarState(CarStateBase):
@@ -15,6 +24,13 @@ class CarState(CarStateBase):
     self.shifter_values = can_define.dv["Transmission"]["Gear"]
 
     self.angle_rate_calulator = CanSignalRateCalculator(50)
+    self.dashlights_msg = {}
+    self.dashlights_dat = b""
+    self.stop_start_state = 0
+    self.avh_frames = {}
+    self.cruise_buttons_msg = {}
+    self.es_lkas_alert_dat = b""
+    self.cruise_buttons = {button: 0 for button in SUBARU_CRUISE_BUTTONS}
 
   def update(self, can_parsers, starpilot_toggles) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -23,6 +39,15 @@ class CarState(CarStateBase):
     cp_main = can_parsers[Bus.main] if self.CP.flags & SubaruFlags.D_PLATFORM else cp
     cp_angle = cp_main if self.CP.flags & SubaruFlags.D_PLATFORM else cp
     ret = structs.CarState()
+
+    if self.CP.carFingerprint == CAR.SUBARU_LEGACY_2025:
+      self.avh_frames = {a: (cp_alt.ts_nanos[a]["CHECKSUM"] / 1e9, cp_alt.vl_raw[a]) for a in AVH_INPUTS}
+
+    if self.CP.carFingerprint in SUBARU_STOP_START_CARS:
+      stop_start_cp = cp_alt if self.CP.flags & SubaruFlags.GLOBAL_GEN2 else cp
+      self.dashlights_msg = copy.copy(stop_start_cp.vl["Dashlights"])
+      self.dashlights_dat = stop_start_cp.vl_raw["Dashlights"]
+      self.stop_start_state = stop_start_cp.vl["Engine_Stop_Start"]["STOP_START_STATE"]
 
     throttle_msg = cp.vl["Throttle"] if not (self.CP.flags & SubaruFlags.HYBRID) else cp_alt.vl["Throttle_Hybrid"]
     ret.gasPressed = throttle_msg["Throttle_Pedal"] > 1e-5
@@ -66,14 +91,14 @@ class CarState(CarStateBase):
 
     if self.CP.flags & SubaruFlags.LKAS_ANGLE:
       ret.steeringAngleDeg = cp_angle.vl["Steering_2"]["Steering_Angle"]
-      steering_updated = len(cp_angle.vl_all["Steering_2"]["Steering_Angle"]) > 0
+      steering_counter = cp_angle.vl["Steering_2"]["COUNTER"]
     else:
       ret.steeringAngleDeg = cp.vl["Steering_Torque"]["Steering_Angle"]
-      steering_updated = len(cp.vl_all["Steering_Torque"]["Steering_Angle"]) > 0
+      steering_counter = cp.vl["Steering_Torque"].get("COUNTER", 0)
 
     if not (self.CP.flags & SubaruFlags.PREGLOBAL):
       # ideally we get this from the car, but unclear if it exists. diagnostic software doesn't even have it
-      ret.steeringRateDeg = self.angle_rate_calulator.update(ret.steeringAngleDeg, steering_updated)
+      ret.steeringRateDeg = self.angle_rate_calulator.update(ret.steeringAngleDeg, steering_counter)
 
     ret.steeringTorque = cp_angle.vl["Steering_Torque"]["Steer_Torque_Sensor"]
     ret.steeringTorqueEps = cp_angle.vl["Steering_Torque"]["Steer_Torque_Output"]
@@ -127,10 +152,23 @@ class CarState(CarStateBase):
         self.es_status_msg = copy.copy(cp_es_brake.vl["ES_Status"])
         self.cruise_control_msg = copy.copy(cp_cruise.vl["CruiseControl"])
 
+      if self.CP.carFingerprint in SUBARU_REDNECK_CRUISE_CARS:
+        cruise_buttons = cp.vl["Cruise_Buttons"]
+        if getattr(starpilot_toggles, "subaru_redneck_cruise", False):
+          ret.buttonEvents = []
+          for button, button_type in SUBARU_CRUISE_BUTTONS.items():
+            ret.buttonEvents.extend(create_button_events(
+              int(bool(cruise_buttons[button])), self.cruise_buttons[button], {1: button_type},
+            ))
+        self.cruise_buttons = {button: int(bool(cruise_buttons[button])) for button in SUBARU_CRUISE_BUTTONS}
+        self.cruise_buttons_msg = copy.copy(cruise_buttons)
+
     if not (self.CP.flags & SubaruFlags.HYBRID):
       self.es_distance_msg = copy.copy(cp_es_distance.vl["ES_Distance"])
 
     self.es_dashstatus_msg = copy.copy(cp_cam.vl["ES_DashStatus"])
+    if self.CP.flags & SubaruFlags.ASCENT_LKAS_ALERT:
+      self.es_lkas_alert_dat = cp_cam.vl_raw[0x3C4]
     if self.CP.flags & SubaruFlags.SEND_INFOTAINMENT:
       self.es_infotainment_msg = copy.copy(cp_cam.vl["ES_Infotainment"])
 
@@ -147,11 +185,16 @@ class CarState(CarStateBase):
 
   @staticmethod
   def get_can_parsers(CP):
+    avh_messages = [(a, 0) for a in (0x6BB, 0x32B, 0x40, 0x48)] if CP.carFingerprint == CAR.SUBARU_LEGACY_2025 else []
+    camera_messages = [(0x3C4, 0)] if CP.flags & SubaruFlags.ASCENT_LKAS_ALERT else []
     parsers = {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.main_for_cp(CP)),
-      Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.camera),
-      Bus.alt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.alt_for_cp(CP))
+      Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], camera_messages, CanBus.camera),
+      Bus.alt: CANParser(DBC[CP.carFingerprint][Bus.pt], avh_messages, CanBus.alt_for_cp(CP))
     }
     if CP.flags & SubaruFlags.D_PLATFORM:
       parsers[Bus.main] = CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.main)
+    if CP.carFingerprint == CAR.SUBARU_LEGACY_2025:
+      for address in AVH_INPUTS:
+        parsers[Bus.alt].vl[address]
     return parsers

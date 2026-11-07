@@ -1,3 +1,5 @@
+# Ford platform data and limits first imported in StarPilot 3f6ccd104e substantially adapt
+# BluePilot bp-7.0 contributor work. See the repository root CREDITS.md and THIRD_PARTY_NOTICES.md.
 import copy
 import re
 from dataclasses import dataclass, field, replace
@@ -48,6 +50,7 @@ class FordSafetyFlags(IntFlag):
   LONG_CONTROL = 1
   CANFD = 2
   LKA_STEERING = 4
+  MACH_E_CURVATURE = 8
 
 
 class FordFlags(IntFlag):

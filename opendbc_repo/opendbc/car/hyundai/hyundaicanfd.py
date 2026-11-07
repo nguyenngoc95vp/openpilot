@@ -1,9 +1,42 @@
 import copy
+# Provenance: portions of HKG angle-command construction are adapted from sunnypilot/opendbc's
+# hkg-angle-steering-2025 branch at cc4b08625. See CREDITS.md and THIRD_PARTY_NOTICES.md.
 import numpy as np
 from opendbc.car import CanBusBase, CanData
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.crc import CRC16_XMODEM
-from opendbc.car.hyundai.values import HyundaiFlags, CAR
+from opendbc.car.hyundai.values import HyundaiFlags, CAR, CANFD_ALT_BUTTONS_RESUME_CAR
+
+
+_adrv_0x51_templates: dict[CAR, bytes] = {}
+
+
+def cache_adrv_0x51_template(car_fingerprint: CAR, dat: bytes | None) -> None:
+  if car_fingerprint not in (CAR.KIA_EV6, CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN):
+    return
+
+  if dat is None:
+    _adrv_0x51_templates.pop(car_fingerprint, None)
+  elif len(dat) == 32 and any(dat[3:]):
+    _adrv_0x51_templates[car_fingerprint] = bytes(dat)
+
+
+def create_adrv_0x51(packer, CAN, frame: int, car_fingerprint: CAR | None = None, drive_gear: bool = False,
+                     v_ego: float | None = None):
+  template = _adrv_0x51_templates.get(car_fingerprint)
+  if template is None:
+    return packer.make_can_msg("ADRV_0x51", CAN.ACAN, {})
+
+  dat = bytearray(template)
+  dat[2] = (template[2] + frame + 1) & 0xFF
+  dat[3] = (dat[3] & ~0x1) | int(drive_gear)
+  if car_fingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN and v_ego is not None and np.isfinite(v_ego):
+    speed_raw = int(np.clip(round(v_ego * 100.0), 0, 65534))
+    dat[8:10] = speed_raw.to_bytes(2, "little")
+  crc = hkg_can_fd_checksum(0x51, None, dat)
+  dat[0] = crc & 0xFF
+  dat[1] = (crc >> 8) & 0xFF
+  return CanData(0x51, bytes(dat), CAN.ACAN)
 
 
 def _set_value(msg: bytearray, sig, ival: int) -> None:
@@ -63,61 +96,6 @@ def _update_checksum(packer, address: int, dat: bytearray) -> None:
   _set_value(dat, sig_checksum, checksum)
 
 
-def _set_little_endian_bits(dat: bytearray, lsb: int, size: int, value: int) -> None:
-  """Write the legacy HDA-II field layout without changing the generated DBC aliases."""
-  value &= (1 << size) - 1
-  bit = lsb
-  remaining = size
-  while remaining:
-    byte = bit // 8
-    shift = bit % 8
-    chunk_size = min(remaining, 8 - shift)
-    mask = ((1 << chunk_size) - 1) << shift
-    dat[byte] = (dat[byte] & ~mask) | ((value & ((1 << chunk_size) - 1)) << shift)
-    value >>= chunk_size
-    bit += chunk_size
-    remaining -= chunk_size
-
-
-def _create_gv70_lka_status_msg(packer, CAN, message_name: str, bus: int, enabled: bool,
-                                lat_active: bool, apply_torque: int):
-  values = {
-    "LKA_MODE": 2,
-    "LKA_ICON": 2 if enabled else 1,
-    "TORQUE_REQUEST": apply_torque,
-    "STEER_REQ": 1 if lat_active else 0,
-    "LKA_ASSIST": 0,
-    "STEER_MODE": 0,
-    "DAMP_FACTOR": 100,
-  }
-  address, raw, _ = packer.make_can_msg(message_name, bus, values)
-  dat = bytearray(raw)
-
-  legacy_fields = (
-    (24, 3, 2),
-    (27, 3, 0),
-    (30, 2, 0),
-    (32, 2, 0),
-    (34, 2, 0),
-    (36, 2, 0),
-    (38, 3, 2 if enabled else 1),
-    (52, 2, 1 if lat_active else 0),
-    (54, 2, 0),
-    (56, 1, 0),
-    (60, 4, 0),
-    (80, 2, 0),
-  )
-  for lsb, size, value in legacy_fields:
-    _set_little_endian_bits(dat, lsb, size, value)
-
-  _set_little_endian_bits(dat, 64 if message_name == "LKAS" else 104, 8, 100)
-  if message_name == "LKAS":
-    _set_little_endian_bits(dat, 84, 3, 0)
-
-  _update_checksum(packer, address, dat)
-  return address, bytes(dat), bus
-
-
 def _create_angle_lfa_msg(packer, CAN, values, apply_angle: float, lat_active: bool, torque_reduction_gain: float):
   address = packer.dbc.name_to_msg["LFA"].address
   dat = packer.pack(address, values)
@@ -153,18 +131,11 @@ def create_angle_adas_cmd(packer, CAN, apply_angle: float, lat_active: bool, tor
 
 def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque, apply_angle,
                              lfa_base_values=None, lkas_base_values=None, lka_icon=None,
-                             send_lfa_status=False, lfa_only=False):
+                             longitudinal_active=None):
   if lka_icon is None:
     lka_icon = 2 if enabled else 1
-
-  if CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN and CP.flags & HyundaiFlags.CANFD_LKA_STEERING:
-    ret = []
-    if CP.openpilotLongitudinalControl or send_lfa_status:
-      ret.append(_create_gv70_lka_status_msg(packer, CAN, "LFA", CAN.ECAN, enabled, lat_active, apply_torque))
-    if lfa_only:
-      return ret
-    ret.append(_create_gv70_lka_status_msg(packer, CAN, "LKAS", CAN.ACAN, enabled, lat_active, apply_torque))
-    return ret
+  if longitudinal_active is None:
+    longitudinal_active = CP.openpilotLongitudinalControl
 
   angle_lkas_alt = CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT
 
@@ -183,7 +154,12 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   else:
     lkas_values = copy.copy(control_values)
     lkas_values["LKA_AVAILABLE"] = 0
-    if CP.carFingerprint in (CAR.KIA_CARNIVAL_4TH_GEN, CAR.KIA_CARNIVAL_2025, CAR.KIA_CARNIVAL_HEV_4TH_GEN):
+    if CP.carFingerprint in (
+      CAR.KIA_CARNIVAL_4TH_GEN,
+      CAR.KIA_CARNIVAL_2025,
+      CAR.KIA_CARNIVAL_HEV_4TH_GEN,
+      CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN,
+    ):
       lkas_values["DAMP_FACTOR"] = 100
 
   if lfa_base_values:
@@ -202,7 +178,21 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
     lkas_values["LKAS_ANGLE_ACTIVE"] = 2 if lat_active else 1
     lkas_values["ADAS_ACIAnglTqRedcGainVal"] = apply_torque if lat_active else 0.0
     if angle_lkas_alt:
-      if lat_active:
+      if CP.carFingerprint == CAR.KIA_SPORTAGE_HEV_2026:
+        lkas_values = {
+          "LKA_OptUsmSta": 0,
+          "LKA_SysIndReq": 2 if enabled else 1,
+          "StrTqReqVal": 0,
+          "LKA_SysWrn": 0,
+          "ActToiSta": 0,
+          "LKA_UsmMod": 0,
+          "LKA_RcgSta": 3 if lat_active else 0,
+          "Damping_Gain": 100,
+          "ADAS_StrAnglReqVal": apply_angle,
+          "LKAS_ANGLE_ACTIVE": 2 if lat_active else 1,
+          "ADAS_ACIAnglTqRedcGainVal": apply_torque if lat_active else 0.0,
+        }
+      elif lat_active:
         lkas_values = {
           "LKA_OptUsmSta": 0,
           "LKA_RcgSta": 3,
@@ -258,10 +248,8 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   ret = []
   if CP.flags & HyundaiFlags.CANFD_LKA_STEERING:
     lkas_msg = "LKAS_ALT" if CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT else "LKAS"
-    if (CP.openpilotLongitudinalControl and not CP.flags & HyundaiFlags.CAN_CANFD_BLENDED) or send_lfa_status:
+    if longitudinal_active and not CP.flags & HyundaiFlags.CAN_CANFD_BLENDED:
       ret.append(packer.make_can_msg("LFA", CAN.ECAN, lfa_values))
-    if lfa_only:
-      return ret
     ret.append(packer.make_can_msg(lkas_msg, CAN.ACAN, lkas_values))
   else:
     if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
@@ -311,16 +299,27 @@ def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
 
 
 def create_buttons(packer, CP, CAN, cnt, btn=0, base_values=None, left_paddle=False, right_paddle=False):
-  values = {k: v for k, v in base_values.items() if k not in ("_CHECKSUM", "COUNTER")} if base_values else {}
+  values = {k: v for k, v in base_values.items() if k not in ("CHECKSUM", "_CHECKSUM", "COUNTER")} if base_values else {}
   values.update({
     "COUNTER": cnt,
     "SET_ME_1": 1,
     "CRUISE_BUTTONS": btn,
-    "LEFT_PADDLE": int(left_paddle),
-    "RIGHT_PADDLE": int(right_paddle),
   })
+  if not (CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS and CP.carFingerprint in CANFD_ALT_BUTTONS_RESUME_CAR):
+    values.update({
+      "LEFT_PADDLE": int(left_paddle),
+      "RIGHT_PADDLE": int(right_paddle),
+    })
 
   bus = CAN.ECAN if CP.flags & HyundaiFlags.CANFD_LKA_STEERING else CAN.CAM
+  if CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS and CP.carFingerprint in CANFD_ALT_BUTTONS_RESUME_CAR:
+    address, dat, bus = packer.make_can_msg("CRUISE_BUTTONS_ALT", bus, values)
+    dat = bytearray(dat)
+    checksum = hkg_can_fd_checksum(address, None, dat)
+    dat[0] = checksum & 0xFF
+    dat[1] = (checksum >> 8) & 0xFF
+    return address, bytes(dat), bus
+
   return packer.make_can_msg("CRUISE_BUTTONS", bus, values)
 
 
@@ -736,13 +735,13 @@ def create_ioniq_6_cluster_lane_change_messages(CAN, frame, side=None):
 
 def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control,
                        main_mode_acc=1, jerk_lower=None, jerk_upper=None, direct_accel=False,
-                       lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None):
+                       lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None, raw_accel=None):
   jerk = 5
   jn = jerk / 50
   if not enabled or gas_override:
     a_val, a_raw = 0, 0
   elif direct_accel:
-    a_raw = accel
+    a_raw = accel if raw_accel is None else raw_accel
     a_val = accel
   else:
     a_raw = accel
@@ -820,15 +819,14 @@ def create_fca_warning_light(packer, CAN, frame):
   return ret
 
 
-def create_adrv_messages(packer, CAN, frame, blended_hda2=False):
+def create_adrv_messages(packer, CAN, frame, blended_hda2=False, car_fingerprint=None, drive_gear=False,
+                         v_ego=None):
   # messages needed to car happy after disabling
   # the ADAS Driving ECU to do longitudinal control
 
   ret = []
 
-  values = {
-  }
-  ret.append(packer.make_can_msg("ADRV_0x51", CAN.ACAN, values))
+  ret.append(create_adrv_0x51(packer, CAN, frame, car_fingerprint, drive_gear, v_ego))
 
   if blended_hda2:
     return ret

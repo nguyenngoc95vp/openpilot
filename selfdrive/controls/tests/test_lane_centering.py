@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
+from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController, get_lane_centering_visual_direction
 
 
 _V_EGO = 20.0
@@ -29,9 +29,9 @@ def _model(left=-1.8, right=1.8, model_y=0.0, lane_prob=0.9, lane_std=0.1, path_
 
 
 def _update(controller, model, *, offset=0.0, authority=1.0, enabled=True, active=True, valid=True, speed=_V_EGO,
-            pause_on_signal=False, turn_signal_active=False):
+            pause_on_signal=False, turn_signal_active=False, driver_override=False):
   return controller.update(0.0, model, speed, enabled, offset, authority, active, valid,
-                           pause_on_signal, turn_signal_active)
+                           pause_on_signal, turn_signal_active, driver_override)
 
 
 def _converge(model, *, offset=0.0, authority=1.0):
@@ -76,6 +76,18 @@ def test_turn_signal_pause_can_be_disabled():
   controller, _ = _converge(model, authority=0.0)
   signaled = _update(controller, model, authority=0.0, turn_signal_active=True)
   assert signaled == pytest.approx(output, abs=1e-7)
+
+
+def test_driver_override_clears_filtered_correction():
+  model = _model(left=-1.5, right=2.1)
+  controller, centered = _converge(model, authority=0.0)
+  assert centered > 0.0
+
+  overridden = _update(controller, model, authority=0.0, driver_override=True)
+  assert overridden == 0.0
+
+  reacquired = _update(controller, model, authority=0.0)
+  assert 0.0 < reacquired < centered
 
 
 @pytest.mark.parametrize(
@@ -127,18 +139,59 @@ def test_offset_is_reduced_in_narrow_lane():
   assert np.isclose(at_safe_limit, above_safe_limit)
 
 
-def test_confident_e2e_path_can_fully_break_in():
-  model = _model(left=-1.0, right=2.6, model_y=0.0, path_std=0.1)
+@pytest.mark.parametrize("direction", [-1.0, 1.0])
+def test_confident_e2e_path_retains_bounded_lane_correction(direction):
+  model = _model(left=-2.4, right=2.4, model_y=direction * 0.6, path_std=0.1)
   _, lane_authority = _converge(model, authority=0.0)
   _, e2e_authority = _converge(model, authority=1.0)
-  assert lane_authority > 0.0
-  assert abs(e2e_authority) < 1e-9
+  assert lane_authority * direction < 0.0
+  assert e2e_authority == pytest.approx(0.2 * lane_authority)
+
+
+@pytest.mark.parametrize("direction", [-1.0, 1.0])
+def test_e2e_retains_more_lane_correction_near_boundary(direction):
+  model = _model(model_y=direction * 0.8, path_std=0.1)
+  _, lane_authority = _converge(model, authority=0.0)
+  _, e2e_authority = _converge(model, authority=1.0)
+  assert e2e_authority == pytest.approx(0.5 * lane_authority)
+
+
+def test_e2e_boundary_authority_blends_continuously():
+  fractions = []
+  for clearance in np.linspace(1.55, 1.05, 101):
+    model = _model(left=-2.4, right=2.4, model_y=-2.4 + clearance)
+    lane_valid, lane_authority = LaneCenteringController._raw_correction(model, _V_EGO, 0.0, 0.0)
+    e2e_valid, e2e_authority = LaneCenteringController._raw_correction(model, _V_EGO, 0.0, 1.0)
+    assert lane_valid and e2e_valid
+    fractions.append(e2e_authority / lane_authority)
+  assert fractions[0] == pytest.approx(0.2)
+  assert fractions[-1] == pytest.approx(0.5)
+  assert np.all(np.diff(fractions) >= -1e-9)
+  assert np.max(np.diff(fractions)) < 0.004
+
+
+@pytest.mark.parametrize("line", [1, 2])
+def test_e2e_boundary_correction_requires_both_lane_lines(line):
+  model = _model(model_y=-0.8)
+  assert _update(LaneCenteringController(), model) > 0.0
+  model.laneLineProbs[line] = 0.59
+  assert _update(LaneCenteringController(), model) == 0.0
+
+
+@pytest.mark.parametrize("direction", [-1.0, 1.0])
+def test_e2e_boundary_correction_remains_capped_and_yields_to_driver(direction):
+  model = _model(model_y=direction * 2.0)
+  controller, output = _converge(model)
+  assert output * direction < 0.0
+  assert abs(output) <= 0.004 * 0.30
+  assert _update(controller, model, driver_override=True) == 0.0
 
 
 def test_uncertain_e2e_path_does_not_break_in():
   model = _model(left=-1.0, right=2.6, model_y=0.0, path_std=0.6)
+  _, lane_only = _converge(model, authority=0.0)
   _, output = _converge(model, authority=1.0)
-  assert output > 0.0
+  assert output == pytest.approx(lane_only)
 
 
 def test_e2e_authority_blends_lane_correction():
@@ -174,3 +227,25 @@ def test_correction_is_smoothed_and_capped():
   _, steady = _converge(model, authority=0.0)
   assert 0.0 < first < steady
   assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
+
+
+def test_visual_direction_matches_curvature_sign():
+  # Positive curvature is right in this tree's convention.
+  assert get_lane_centering_visual_direction(_model(left=-1.5, right=2.1), _V_EGO, 0.0, 0.0, True, True) == 1
+  assert get_lane_centering_visual_direction(_model(left=-2.1, right=1.5), _V_EGO, 0.0, 0.0, True, True) == -1
+
+
+def test_visual_direction_requires_both_primary_lane_lines():
+  model = _model(left=-1.5, right=2.1)
+  model.laneLineProbs[2] = 0.2
+  assert get_lane_centering_visual_direction(model, _V_EGO, 0.0, 0.0, True, True) == 0
+
+
+def test_visual_direction_uses_filtered_correction_in_deadband():
+  model = _model()
+  assert get_lane_centering_visual_direction(model, _V_EGO, 0.0, 0.0, True, True, applied_correction=0.001) == 1
+
+
+def test_visual_direction_follows_applied_correction():
+  model = _model(left=-1.5, right=2.1)
+  assert get_lane_centering_visual_direction(model, _V_EGO, 0.0, 0.0, True, True, applied_correction=-0.001) == -1

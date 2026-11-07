@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from cereal import car
 from openpilot.common.params import Params
+from opendbc.car.gps import car_gps_available
 from openpilot.system.hardware import HARDWARE, PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 
@@ -30,11 +31,24 @@ def logging(started: bool, params: Params, CP: car.CarParams, starpilot_toggles:
 def ublox_available() -> bool:
   return os.path.exists('/dev/ttyHS0') and not os.path.exists('/persist/comma/use-quectel-gps')
 
+
+def update_car_gps_param(params: Params) -> bool | None:
+  car_params = params.get("CarParams")
+  if car_params is None:
+    return None
+
+  with car.CarParams.from_bytes(car_params) as CP:
+    available = car_gps_available(CP)
+  if available != params.get_bool("CarGpsAvailable"):
+    params.put_bool("CarGpsAvailable", available)
+  return available
+
 def ublox(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  car_gps = update_car_gps_param(params)
   use_ublox = ublox_available()
   if use_ublox != params.get_bool("UbloxAvailable"):
     params.put_bool("UbloxAvailable", use_ublox)
-  return started and use_ublox
+  return started and use_ublox and car_gps is False
 
 def joystick(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and params.get_bool("JoystickDebugMode")
@@ -52,6 +66,7 @@ def not_long_maneuver(started: bool, params: Params, CP: car.CarParams, starpilo
   return started and not params.get_bool("LongitudinalManeuverMode")
 
 def qcomgps(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  update_car_gps_param(params)
   return started and not ublox_available()
 
 def always_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
@@ -102,8 +117,36 @@ def run_navigationd(started: bool, params: Params, CP: car.CarParams, starpilot_
   return started and params.get("NavDestination") is not None
 
 
+def run_mapd(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  if started:
+    return True
+
+  memory_params = Params(memory=True)
+  return memory_params.get_bool("DownloadMaps") or memory_params.get_bool("CancelDownloadMaps")
+
+
+def bluetooth_enabled(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return params.get_bool("BluetoothEnabled")
+
+
+def soundd_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return driverview(started, params, CP, starpilot_toggles) or params.get_bool("BluetoothAudioTestActive")
+
+
+def wheel_controls_enabled(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return params.get_bool("WheelControlsEnabled") or (
+    params.get_bool("ScreenManagement") and params.get_bool("StandbyMode") and params.get_bool("StandbyWakeButton")
+  )
+
+
 def run_v_asm(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and getattr(starpilot_toggles, "v_asm_enabled", False)
+
+
+def run_stinger_object_shadow(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return (started and not CP.notCar and CP.carFingerprint == "KIA_STINGER_2022" and
+          params.get_bool("StingerObjectShadow") and not params.get_bool("DisableLogging") and
+          not getattr(starpilot_toggles, "no_logging", False))
 
 
 def big_device_ui_process() -> NativeProcess:
@@ -137,7 +180,7 @@ procs = [
 
   PythonProcess("sensord", "system.sensord.sensord", sensord_run, enabled=not PC),
   PythonProcess("sentryd", "system.sentryd.sentryd", sentry_mode, enabled=not PC),
-  PythonProcess("soundd", "selfdrive.ui.soundd", driverview),
+  PythonProcess("soundd", "selfdrive.ui.soundd", soundd_run),
   PythonProcess("locationd", "selfdrive.locationd.locationd", only_onroad),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "selfdrive.locationd.calibrationd", only_onroad),
@@ -174,6 +217,8 @@ procs = [
 
 # StarPilot variables
 procs += [
+  PythonProcess("bluetooth_managerd", "starpilot.system.bluetooth.daemon", bluetooth_enabled, enabled=TICI),
+  PythonProcess("wheel_controlsd", "starpilot.system.wheel_controls.wheel_controlsd", wheel_controls_enabled, enabled=TICI, nice=19),
   PythonProcess("the_galaxy", "starpilot.system.the_galaxy.the_galaxy", always_run, nice=10),
   PythonProcess("galaxy", "starpilot.system.galaxy.galaxy", always_run, nice=10),
 ]
@@ -187,11 +232,12 @@ else:
 procs += [
   PythonProcess("device_syncd", "starpilot.system.device_syncd", always_run),
   PythonProcess("starpilot_process", "starpilot.starpilot_process", always_run),
-  PythonProcess("mapd", "starpilot.navigation.mapd_wrapper", always_run, nice=19),
+  PythonProcess("mapd", "starpilot.navigation.mapd_wrapper", run_mapd, nice=19),
   PythonProcess("navigationd", "starpilot.navigation.navigationd", run_navigationd, nice=19),
   PythonProcess("speed_limit_filler", "starpilot.system.speed_limit_filler", run_speed_limit_filler, nice=19),
   PythonProcess("speed_limit_vision", "starpilot.system.speed_limit_vision", run_speed_limit_vision, nice=19),
   PythonProcess("adj_spot_monitor_vision", "starpilot.system.adj_spot_monitor_vision", run_v_asm, nice=19),
+  PythonProcess("stinger_object_shadow", "starpilot.system.stinger_object_shadow", run_stinger_object_shadow, nice=19),
 ]
 
 managed_processes = {p.name: p for p in procs}

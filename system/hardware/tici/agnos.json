@@ -56,6 +56,7 @@
   },
   {
     "name": "boot",
+<<<<<<< HEAD
     "url": "https://files.firestar.link/x/ugiq4cqx08q7/boot9.img.xz",
     "fallback_urls": [
       "https://files-east.firestar.link/x/npthb0hzvtxx/boot9.img.xz"
@@ -63,23 +64,45 @@
     "hash": "ab2eba0f96b2f48efa376330c3eb509158361adf3ad9c20f269ec92457aa841f",
     "hash_raw": "ab2eba0f96b2f48efa376330c3eb509158361adf3ad9c20f269ec92457aa841f",
     "size": 48343040,
+=======
+    "url": "https://files.firestar.link/x/551127s1r1at/boot30.img.xz",
+    "fallback_urls": [
+      "https://files-east.firestar.link/x/k6yo892sdmpu/boot30.img.xz"
+    ],
+    "hash": "ac3863c3834a94986647eb61d21796e7550095a18e0119c9102cab06ce390417",
+    "hash_raw": "ac3863c3834a94986647eb61d21796e7550095a18e0119c9102cab06ce390417",
+    "size": 49043456,
+>>>>>>> upstream/StarPilot
     "sparse": false,
     "full_check": true,
     "has_ab": true,
-    "ondevice_hash": "c12865a879012d6ad3da538c2ae8aff7d58c308c303fc5d8af309cb1707bc036"
+    "ondevice_hash": "b09c28cb609f996fce791c5cf36e00922896d54a54b476a7d9463d4cf817dc9b"
   },
   {
     "name": "system",
+<<<<<<< HEAD
     "url": "https://files.firestar.link/x/07530yj1jd6a/system18.img.xz",
     "fallback_urls": [
       "https://files-east.firestar.link/x/5pmqh33uqrob/system18.img.xz"
     ],
     "hash": "01c84930849f9be2bdbad5e9a8dda3a6fd2be95e81d1b3556574b18346934f49",
     "hash_raw": "01c84930849f9be2bdbad5e9a8dda3a6fd2be95e81d1b3556574b18346934f49",
+=======
+    "url": "https://files.firestar.link/x/i8ndxrnax3j5/system30.img.xz",
+    "fallback_urls": [
+      "https://files-east.firestar.link/x/5xg5c05pefck/system30.img.xz"
+    ],
+    "hash": "9c753bdd90e6079b2cf525659d7523d0ebc0a375bd61e61cca628f1db3832cfd",
+    "hash_raw": "98e15de07c39a19b5fa17c96a67e66d4362f9ebaf7827b640f4127e3b6417da8",
+>>>>>>> upstream/StarPilot
     "size": 4718592000,
-    "sparse": false,
+    "sparse": true,
     "full_check": false,
     "has_ab": true,
+<<<<<<< HEAD
     "ondevice_hash": "01c84930849f9be2bdbad5e9a8dda3a6fd2be95e81d1b3556574b18346934f49"
+=======
+    "ondevice_hash": "9625ec32df735b26ea6b0b62834addc8b522108d5f5c4a2aebcb98fc2b94f4e9"
+>>>>>>> upstream/StarPilot
   }
 ]
