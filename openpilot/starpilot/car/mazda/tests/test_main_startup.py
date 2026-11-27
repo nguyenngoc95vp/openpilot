@@ -111,3 +111,28 @@ def test_main_on_arms_lateral_without_engaging_acc():
   assert not intent.startup_main_pending
   assert not cs.cruiseState.enabled
   assert not native.lateralAllowed and not native.longitudinalAllowed
+
+
+def test_cx8_ti1_profile_is_admitted_only_with_exact_safety_configuration():
+  from opendbc.car.mazda.stock_aol import admitted
+  from opendbc.car.mazda.values import MazdaSafetyFlags
+
+  cp = CarInterface.get_params(CAR.MAZDA_CX8, gen_empty_fingerprint(), [], False, False, False)
+  ti1_param = int(MazdaSafetyFlags.GEN1 | MazdaSafetyFlags.TORQUE_INTERCEPTOR)
+  cp.flags = ti1_param
+  cp.safetyConfigs[0].safetyParam = ti1_param
+  cp.alternativeExperience = 32
+  assert admitted(cp, marked_only=True)
+
+  cp.safetyConfigs[0].safetyParam = 0
+  assert not admitted(cp, marked_only=True)
+
+
+def test_temporary_restriction_release_grace_is_bounded():
+  from opendbc.car.mazda.stock_aol import RESTRICTION_RELEASE_GRACE_NS, within_restriction_grace
+
+  released_at = 1_000_000_000
+  assert within_restriction_grace(released_at, released_at)
+  assert within_restriction_grace(released_at, released_at + RESTRICTION_RELEASE_GRACE_NS)
+  assert not within_restriction_grace(released_at, released_at + RESTRICTION_RELEASE_GRACE_NS + 1)
+  assert not within_restriction_grace(0, released_at)

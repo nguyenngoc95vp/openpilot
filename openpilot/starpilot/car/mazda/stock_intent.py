@@ -1,7 +1,19 @@
 from opendbc.car import structs
-from opendbc.car.mazda.stock_aol import qualified
+from opendbc.car.mazda.stock_aol import admitted, temporary_restriction, within_restriction_grace
 from openpilot.selfdrive.car.cruise import CRUISE_LONG_PRESS
 from openpilot.starpilot.aol.intent import AolCardIntent, AOL_TOGGLE, ButtonType
+
+
+class _ButtonEventsView:
+  """Read-through CarState view; only buttonEvents is replaced."""
+  __slots__ = ('_cs', 'buttonEvents')
+
+  def __init__(self, cs, button_events):
+    self._cs = cs
+    self.buttonEvents = button_events
+
+  def __getattr__(self, name):
+    return getattr(self._cs, name)
 
 
 class MazdaStockCardIntent(AolCardIntent):
@@ -15,6 +27,7 @@ class MazdaStockCardIntent(AolCardIntent):
     self.startup_main_source_ns = 0
     self.startup_native_ready = False
     self.startup_binding = None
+    self.restricted_ns = 0
     self.main_available = False
     self.main_neutral = False
     self.main_pulse = False
@@ -27,10 +40,12 @@ class MazdaStockCardIntent(AolCardIntent):
     from openpilot.starpilot.aol.transport_pause import _healthy_transport_native, availability_only
 
     self.startup_native_ready = False
-    if not self.startup_main_pending or not qualified(self.cp, marked_only=True):
+    if not self.startup_main_pending or not admitted(self.cp, marked_only=True):
       return
     if CS.steerFaultPermanent or CS.accFaulted:
       self.startup_main_pending = False
+      self.startup_main_source_ns = 0
+      self.startup_binding = None
       return
     try:
       event_ns = int(sm.logMonoTime['onroadEvents'])
@@ -40,6 +55,8 @@ class MazdaStockCardIntent(AolCardIntent):
       faults = [event for event in events if disarming_fault([event], CS)]
       if events_current and faults and not availability_only(faults):
         self.startup_main_pending = False
+        self.startup_main_source_ns = 0
+        self.startup_binding = None
         return
       axis = sm['aolAxisState']
       native = (_healthy_transport_native(sm, self.cp, CS, str(axis.sessionId), now_ns, native)
@@ -76,7 +93,7 @@ class MazdaStockCardIntent(AolCardIntent):
       self._perform(action)
 
   def update(self, CS, **kwargs):
-    state = structs.CarState(**CS.to_dict())
+    state = CS
     events = []
     for event in CS.buttonEvents:
       if event.type == ButtonType.cancel:
@@ -104,6 +121,11 @@ class MazdaStockCardIntent(AolCardIntent):
         self.main_pulse = False
       if not available:
         self.main_neutral = True
+        if self.settings.enabled and not state.steerFaultPermanent and not state.accFaulted:
+          # A deliberate MAIN-off observation permits a fresh on-cycle after recovery.
+          self.startup_main_pending = True
+          self.startup_main_source_ns = 0
+          self.startup_binding = None
       elif self.main_seen and self.main_neutral and not self.main_available:
         events.append(structs.CarState.ButtonEvent(type=ButtonType.mainCruise, pressed=True))
         self.main_pulse = True
@@ -140,8 +162,13 @@ class MazdaStockCardIntent(AolCardIntent):
         startup_main = True
       elif self.startup_native_ready and source_ns > 0:
         self.startup_main_source_ns = source_ns
-    state.buttonEvents = events
-    super().update(state.as_reader(), **kwargs)
+    view = _ButtonEventsView(CS, events)
+    now_ns = kwargs.get('now_ns', 0)
+    if getattr(self.cp, 'brand', None) == 'mazda' and temporary_restriction(self.cp, view):
+      self.restricted_ns = now_ns
+    elif kwargs.get('native_rejection_ns', 0) and within_restriction_grace(self.restricted_ns, now_ns):
+      kwargs['native_rejection_ns'] = 0
+    super().update(view, **kwargs)
     if startup_main and not self._fault_inhibit:
       self.allowed_latch = True
       self._last_latch_edge_ns = kwargs.get('now_ns', 0)
