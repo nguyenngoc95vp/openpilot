@@ -62,6 +62,24 @@ class TogglesLayoutMici(NavScroller):
                                        description="Enable to use openpilot driver assistance.\n" +
                                                    "Disable to use your car's stock driver assistance.")
 
+    
+    # Mazda controls must be present in the Mici layout used by Comma 4 too.
+    mazda_torque_interceptor = BigParamControl("torque interceptor", "TorqueInterceptorEnabled",
+                                               toggle_callback=restart_needed_callback,
+                                               description="Enable only when the Torque Interceptor hardware is installed.")
+    mazda_radar_interceptor = BigParamControl("radar interceptor", "RadarInterceptorEnabled",
+                                              toggle_callback=restart_needed_callback,
+                                              description="Enable only when the physical radar interceptor is installed.")
+    mazda_radar_emulation = BigParamControl("radar emulation", "RadarEmulationEnabled",
+                                            toggle_callback=restart_needed_callback,
+                                            description="Software radar emulation: openpilot controls gas and brake instead of the stock radar. No extra hardware required. Do not enable together with Radar Interceptor.")
+    mazda_hybrid_long = BigParamControl("hybrid longitudinal", "MazdaHybridLong",
+                                        toggle_callback=restart_needed_callback,
+                                        description="Requires Radar Emulation. Stock MRCC drives in standard mode; openpilot takes over gas and brake in Experimental Mode.")
+    mazda_low_speed = BigParamControl("lower minimum set speed", "LowerMinSetSpeed",
+                                      toggle_callback=restart_needed_callback,
+                                      description="Requires Radar Emulation. Allows SET- below the stock 19 mph floor, down to about 5 mph. With Hybrid Long, it applies only while openpilot emulation is the ACC master.")
+
     self._scroller.add_widgets([
       self._personality_toggle,
       self._safe_mode_btn,
@@ -75,6 +93,11 @@ class TogglesLayoutMici(NavScroller):
       record_front,
       record_mic,
       enable_openpilot,
+      mazda_torque_interceptor,
+      mazda_radar_interceptor,
+      mazda_radar_emulation,
+      mazda_hybrid_long,
+      mazda_low_speed,
     ])
 
     # Toggle lists
@@ -89,9 +112,16 @@ class TogglesLayoutMici(NavScroller):
       ("RecordFront", record_front),
       ("RecordAudio", record_mic),
       ("OpenpilotEnabledToggle", enable_openpilot),
+      ("TorqueInterceptorEnabled", mazda_torque_interceptor),
+      ("RadarInterceptorEnabled", mazda_radar_interceptor),
+      ("RadarEmulationEnabled", mazda_radar_emulation),
+      ("MazdaHybridLong", mazda_hybrid_long),
+      ("LowerMinSetSpeed", mazda_low_speed),
     )
 
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
+    for control in (mazda_torque_interceptor, mazda_radar_interceptor, mazda_radar_emulation, mazda_hybrid_long, mazda_low_speed):
+      control.set_visible(lambda: ui_state.CP is not None and ui_state.CP.brand == "mazda")
     always_on_dm_toggle.set_enabled(not ui_state.params.get_bool("AlwaysOnDMLock"))
     record_front.set_enabled(False if ui_state.params.get_bool("RecordFrontLock") else (lambda: not ui_state.engaged))
     record_mic.set_enabled(lambda: not ui_state.engaged)
