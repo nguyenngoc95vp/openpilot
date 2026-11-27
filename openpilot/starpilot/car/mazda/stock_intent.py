@@ -122,9 +122,17 @@ class MazdaStockCardIntent(AolCardIntent):
         not (self.cancel_held and any(self.settings.cancel_actions)))
       source_ns = kwargs.get('now_ns', 0)
       if not eligible:
-        self.startup_main_pending = False
+        # MAIN being off is the expected state before the driver presses ON.
+        # Keep the one-time startup authorization pending in that case, but
+        # consume it for disabled settings or safety blockers.
+        if available or not self.settings.enabled or state.steerFaultPermanent or state.accFaulted:
+          self.startup_main_pending = False
+          self.startup_main_source_ns = 0
+          self.startup_binding = None
       elif self.startup_native_ready and kwargs.get('fault_active'):
         self.startup_main_pending = False
+        self.startup_main_source_ns = 0
+        self.startup_binding = None
       elif self.startup_native_ready and self.startup_main_source_ns and source_ns > self.startup_main_source_ns:
         # The first valid sample initializes the transport feedback pipeline.
         # Confirm MAIN on a subsequent fresh sample before admitting startup intent.
