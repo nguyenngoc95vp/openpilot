@@ -81,3 +81,33 @@ def test_startup_admission_requires_bound_current_idle_proof(bad):
     intent.update(cs.as_reader(), fault_active=False, now_ns=now)
   assert intent.allowed_latch is (bad == 'none')
   assert not native.lateralAllowed and not native.longitudinalAllowed
+
+
+
+def test_main_on_arms_lateral_without_engaging_acc():
+  from openpilot.starpilot.tests.test_ford_reverse_intent import NOW, PRODUCER, sample
+
+  cp = CarInterface.get_params(CAR.MAZDA_CX5_2022, gen_empty_fingerprint(), [], False, False, False)
+  cp.alternativeExperience = 32
+  intent = MazdaStockCardIntent(cp, AolSettings(True, 0., 0, 0, (0, 0, 0), (0, 0, 0)))
+  cs = structs.CarState(canValid=True, gearShifter='drive')
+  cs.cruiseState.available = False
+  cs.cruiseState.enabled = False
+
+  # With stock MAIN/ACC off, startup authorization must wait for the driver.
+  intent.update(cs.as_reader(), fault_active=False, now_ns=NOW)
+  assert intent.startup_main_pending
+  assert not intent.allowed_latch
+
+  # Pressing MAIN makes cruise available. Two fresh, idle native proofs are
+  # still required before independent lateral arming is admitted.
+  cs.cruiseState.available = True
+  for tick in (1, 2, 3):
+    now = NOW + tick * 10_000_000
+    sm, native = sample(cp, now, now, tick, active=False, requested=False, allowed=False, event_stamp=now)
+    intent.observe_startup_readiness(sm, cs, native=native, panda_ready=True, now_ns=now, producer=PRODUCER)
+    intent.update(cs.as_reader(), fault_active=False, now_ns=now)
+  assert intent.allowed_latch
+  assert not intent.startup_main_pending
+  assert not cs.cruiseState.enabled
+  assert not native.lateralAllowed and not native.longitudinalAllowed
