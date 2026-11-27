@@ -151,3 +151,10 @@ class TestC4Toggles(unittest.TestCase):
     self.assertTrue(self.audio.enabled)
     self.ui.engaged = True
     self.assertFalse(self.audio.enabled)
+
+
+  def test_mazda_radar_hybrid_and_low_speed_controls_are_on_c4_toggles_page(self):
+    controls = dict(self.panel._refresh_toggles)
+    for key in ("RadarEmulationEnabled", "MazdaHybridLong", "LowerMinSetSpeed"):
+      self.assertIn(key, controls)
+      self.assertIn(controls[key], self.panel._scroller.items)
