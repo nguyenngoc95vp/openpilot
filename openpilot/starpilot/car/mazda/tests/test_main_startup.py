@@ -136,3 +136,31 @@ def test_temporary_restriction_release_grace_is_bounded():
   assert within_restriction_grace(released_at, released_at + RESTRICTION_RELEASE_GRACE_NS)
   assert not within_restriction_grace(released_at, released_at + RESTRICTION_RELEASE_GRACE_NS + 1)
   assert not within_restriction_grace(0, released_at)
+
+
+def test_recovered_startup_requires_fresh_main_off_on_cycle():
+  from openpilot.starpilot.tests.test_ford_reverse_intent import NOW, PRODUCER, sample
+
+  cp = CarInterface.get_params(CAR.MAZDA_CX5_2022, gen_empty_fingerprint(), [], False, False, False)
+  cp.alternativeExperience = 32
+  intent = MazdaStockCardIntent(cp, AolSettings(True, 0., 0, 0, (0, 0, 0), (0, 0, 0)))
+  cs = structs.CarState(canValid=True, gearShifter='drive')
+  cs.cruiseState.available = True
+  cs.steerFaultPermanent = True
+  intent.update(cs.as_reader(), fault_active=False, now_ns=NOW)
+  assert not intent.startup_main_pending and not intent.allowed_latch
+
+  # Recovery by itself does not re-arm. A deliberate healthy MAIN-off sample does.
+  cs.steerFaultPermanent = False
+  cs.cruiseState.available = False
+  intent.update(cs.as_reader(), fault_active=False, now_ns=NOW + 10_000_000)
+  assert intent.startup_main_pending and not intent.allowed_latch
+
+  cs.cruiseState.available = True
+  for tick in (2, 3):
+    now = NOW + tick * 10_000_000
+    sm, native = sample(cp, now, now, tick, active=False, requested=False, allowed=False, event_stamp=now)
+    intent.observe_startup_readiness(sm, cs, native=native, panda_ready=True, now_ns=now, producer=PRODUCER)
+    intent.update(cs.as_reader(), fault_active=False, now_ns=now)
+  assert intent.allowed_latch and not intent.startup_main_pending
+  assert not cs.cruiseState.enabled
